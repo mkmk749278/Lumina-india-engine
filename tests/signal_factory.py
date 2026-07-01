@@ -43,6 +43,7 @@ def make_context(
     regime_60m: Regime = Regime.RANGING,
     regime_daily: Regime = Regime.RANGING,
     candles_5m: list[Candle] | None = None,
+    candles_15m: list[Candle] | None = None,
     volume_avg_5m_20: float = 1000.0,
     atr14_5m: float = 10.0,
     prev_day_high: float = 24100.0,
@@ -54,6 +55,8 @@ def make_context(
     pcr_is_extreme_bullish: bool = False,
     opening_range_high: float | None = None,
     opening_range_low: float | None = None,
+    symbol: str = "NSE:NIFTY26JULFUT-FF",
+    tick_size: float = 0.05,
 ) -> IndiaContext:
     if candles_5m is None:
         candles_5m = [
@@ -75,4 +78,7 @@ def make_context(
         pcr_is_extreme_bullish=pcr_is_extreme_bullish,
         opening_range_high=opening_range_high,
         opening_range_low=opening_range_low,
+        symbol=symbol,
+        tick_size=tick_size,
+        candles_15m=candles_15m if candles_15m is not None else [],
     )

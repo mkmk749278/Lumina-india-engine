@@ -111,3 +111,7 @@ class IndiaContext:
     opening_range_high: float | None = None
     opening_range_low: float | None = None
     key_levels_extra: list[float] = field(default_factory=list)
+    # Instrument identity + higher-timeframe candles the evaluators read.
+    symbol: str = ""
+    tick_size: float = 0.05
+    candles_15m: list[Candle] = field(default_factory=list)
