@@ -158,6 +158,15 @@ REGIME_QUIET_ATR_PCT: float = _safe_float("REGIME_QUIET_ATR_PCT", 0.15)
 CONFIDENCE_EMIT_FLOOR: float = _safe_float("INDIA_CONFIDENCE_EMIT_FLOOR", 65.0)
 CONFIDENCE_A_PLUS: float = _safe_float("INDIA_CONFIDENCE_A_PLUS", 80.0)
 
+# --- evaluator geometry: LIQUIDITY_SWEEP_REVERSAL (spec §10.1) -----------
+# Each evaluator owns its SL/TP geometry (CLAUDE.md). These are LSR's.
+LSR_SWING_LOOKBACK: int = _safe_int("LSR_SWING_LOOKBACK", 30)
+LSR_VOLUME_MULT: float = _safe_float("LSR_VOLUME_MULT", 1.2)
+LSR_SL_ATR_MULT: float = _safe_float("LSR_SL_ATR_MULT", 0.3)
+LSR_MIN_SL_PCT: float = _safe_float("LSR_MIN_SL_PCT", 0.15)
+LSR_MAX_SL_PCT: float = _safe_float("LSR_MAX_SL_PCT", 1.0)
+LSR_MIN_RR: float = _safe_float("LSR_MIN_RR", 1.5)
+
 # --- data files ----------------------------------------------------------
 _CONFIG_DIR = Path(__file__).resolve().parent
 NSE_HOLIDAYS_FILE: str = _safe_str(
