@@ -1,0 +1,11 @@
+{
+  "_comment": "NSE equity/F&O trading holidays, YYYY-MM-DD (IST). This list is INCOMPLETE: it contains only fixed-Gregorian statutory holidays that fall on a weekday. Festival-based holidays (Holi, Ram Navami, Mahavir Jayanti, Good Friday, Bakri Id, Ganesh Chaturthi, Dussehra, Diwali/Laxmi Pujan, Balipratipada, Guru Nanak Jayanti, etc.) shift year to year and MUST be added from the official NSE circular before go-live. Set verified=true only once the full official list is entered.",
+  "_source": "https://www.nseindia.com/products-services/equity-market-trading-holidays",
+  "verified": false,
+  "holidays": [
+    "2026-01-26",
+    "2026-05-01",
+    "2026-10-02",
+    "2026-12-25"
+  ]
+}

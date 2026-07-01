@@ -1,0 +1,6 @@
+# Runtime dependencies actually imported by shipped code.
+# The fuller stack from the spec (pandas/numpy/ta, fastapi, redis, firebase-admin,
+# httpx, razorpay, cryptography, aiosqlite, apscheduler) is added incrementally as
+# the modules that import it land — we do not pin dependencies nothing uses yet.
+pytz==2024.1
+loguru==0.7.2

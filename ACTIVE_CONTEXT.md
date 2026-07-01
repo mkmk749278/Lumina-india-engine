@@ -178,8 +178,8 @@ These are evaluation criteria, not hard cutoffs. Owner decides Phase 2 activatio
 
 1. **Owner action: Provision India VPS** — Ubuntu 22.04, static IP, Docker installed
 2. **Owner action: Apply for Fyers API** — myapi.fyers.in
-3. **CTE: Create GitHub repos** — lumin-india-engine, lumin-india-app, lumin-india-ops with CLAUDE.md, OWNER_BRIEF.md, ACTIVE_CONTEXT.md bootstrapped
-4. **CTE: Bootstrap lumin-india-engine** — project skeleton, docker-compose.india.yml, config/__init__.py, session manager, holiday manager
+3. ~~**CTE: Create GitHub repos**~~ — **DONE (Session 2).** `lumina-india-engine` + `lumin-india-app` bootstrapped with operating docs + self-scaling CI (PR #1 each, merged). `lumin-india-ops` still needs its CLAUDE.md (no ops brief in the handover set — pending owner/draft).
+4. **CTE: Bootstrap lumin-india-engine** — **IN PROGRESS (Session 2).** Landed: `pyproject.toml`, `config/__init__.py`, `src/utils.py`, session/holiday/**expiry** managers + full test suite (22 tests, ruff/mypy clean). **Deferred (no-scaffold discipline):** `docker-compose.india.yml` + Dockerfile land with the first runnable entrypoint (`src/main.py`).
 5. **CTE: Fyers WebSocket integration** — tick store, historical data fetch at session open
 6. **CTE: IndiaContext builder** — assemble all indicators from tick + historical + OI + VIX/PCR data
 7. **CTE: 14 evaluators** — port from crypto engine, add India-specific (ORB, VIX_EXTREME, PCR_EXTREME, OI_SPIKE_REVERSAL, EXPIRY_GAMMA_SQUEEZE)
@@ -208,3 +208,4 @@ These are evaluation criteria, not hard cutoffs. Owner decides Phase 2 activatio
 | Session | Date | Key outcomes |
 |---|---|---|
 | 1 | 2026-07-01 | Market research complete. Full AI handover spec written (27 parts). Architectural decisions locked. CLAUDE.md × 2 + ACTIVE_CONTEXT.md written. No Telegram. Standalone app. New VPS. lumin-india-* repos. Fyers API v3. GitHub Actions secrets. |
+| 2 | 2026-07-01 | Bootstrapped `lumina-india-engine` + `lumin-india-app` (operating docs + self-scaling CI; PR #1 each, merged). Started engine skeleton: config (env-overridable, no-scaffold scoped), IST-aware SessionManager (state machine + hard session gate), HolidayManager (verified-flag guard on incomplete calendar), ExpiryManager (weekly resolution + intraday roll + holiday shift + Fyers symbol). 22 tests, ruff+mypy clean. Flagged for owner: NIFTY/BANKNIFTY futures weekly-vs-monthly, BANKNIFTY min-scalp 40-vs-25 (spec), lot sizes 75/35-vs-65/30 (spec), engine repo canonical name `Lumina-india-engine`. |
