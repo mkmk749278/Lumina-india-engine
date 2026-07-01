@@ -144,6 +144,10 @@ INSTRUMENTS: dict[str, Instrument] = {
     ),
 }
 
+# --- regime classification ----------------------------------------------
+# ATR as a % of price below which the 60m/daily regime is judged QUIET.
+REGIME_QUIET_ATR_PCT: float = _safe_float("REGIME_QUIET_ATR_PCT", 0.15)
+
 # --- data files ----------------------------------------------------------
 _CONFIG_DIR = Path(__file__).resolve().parent
 NSE_HOLIDAYS_FILE: str = _safe_str(
