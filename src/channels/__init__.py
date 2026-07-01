@@ -5,15 +5,19 @@ from __future__ import annotations
 from src.channels.base import Evaluator
 from src.channels.india_scalp import (
     BreakdownShort,
+    IndiaVixExtreme,
     LiquiditySweepReversal,
     OpeningRangeBreakout,
+    PcrExtreme,
     VolumeSurgeBreakout,
 )
 
 __all__ = [
     "BreakdownShort",
     "Evaluator",
+    "IndiaVixExtreme",
     "LiquiditySweepReversal",
     "OpeningRangeBreakout",
+    "PcrExtreme",
     "VolumeSurgeBreakout",
 ]
