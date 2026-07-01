@@ -60,6 +60,8 @@ def make_context(
     day_open: float = 0.0,
     intraday_high: float = 0.0,
     intraday_low: float = 0.0,
+    candles_60m: list[Candle] | None = None,
+    current_oi: float = 0.0,
 ) -> IndiaContext:
     if candles_5m is None:
         candles_5m = [
@@ -87,4 +89,6 @@ def make_context(
         day_open=day_open,
         intraday_high=intraday_high,
         intraday_low=intraday_low,
+        candles_60m=candles_60m if candles_60m is not None else [],
+        current_oi=current_oi,
     )

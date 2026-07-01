@@ -119,3 +119,6 @@ class IndiaContext:
     day_open: float = 0.0
     intraday_high: float = 0.0
     intraday_low: float = 0.0
+    # 60m candles (trend-pullback EMAs) + absolute OI (OI-spike gate).
+    candles_60m: list[Candle] = field(default_factory=list)
+    current_oi: float = 0.0

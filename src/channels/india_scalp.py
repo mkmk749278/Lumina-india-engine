@@ -11,7 +11,7 @@ import uuid
 
 import config
 from src.channels.base import Evaluator
-from src.indicators import rsi
+from src.indicators import ema, rsi
 from src.market.candle import Candle
 from src.patterns import is_bearish_rejection, is_bullish_rejection
 from src.regime import Regime
@@ -477,3 +477,179 @@ def _nearest_above(value: float, candidates: list[float | None]) -> float | None
 def _nearest_below(value: float, candidates: list[float | None]) -> float | None:
     below = [x for x in candidates if x is not None and x < value]
     return max(below) if below else None
+
+
+class TrendPullbackEma(Evaluator):
+    """§10.3 — with-trend pullback to the 5m EMA21/EMA55 and reclaim.
+
+    Only fires when the 60m regime is trending and the 60m EMA stack agrees.
+    """
+
+    setup_class = SetupClass.TREND_PULLBACK_EMA
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled:
+            return None
+        if ctx.regime_60m not in (Regime.TRENDING_UP, Regime.TRENDING_DOWN):
+            return None
+        if len(ctx.candles_5m) < 56 or len(ctx.candles_60m) < 56:
+            return None
+        closes5 = [c.close for c in ctx.candles_5m]
+        closes60 = [c.close for c in ctx.candles_60m]
+        ema21_5, ema55_5 = ema(closes5, 21), ema(closes5, 55)
+        ema21_60, ema55_60 = ema(closes60, 21), ema(closes60, 55)
+        current = ctx.candles_5m[-1]
+        atr = ctx.atr14_5m
+        rsi5 = rsi(closes5, 14)
+        long = ctx.regime_60m is Regime.TRENDING_UP
+
+        if long and ema21_60 <= ema55_60:
+            return None
+        if not long and ema21_60 >= ema55_60:
+            return None
+        if not (config.TPE_RSI_MIN <= rsi5 <= config.TPE_RSI_MAX):
+            return None
+
+        near_21 = abs(current.close - ema21_5) <= abs(current.close - ema55_5)
+        ema_ref = ema21_5 if near_21 else ema55_5
+        if abs(current.close - ema_ref) > atr * config.TPE_PULLBACK_ATR_MULT:
+            return None
+        reclaim = (
+            (current.low < ema_ref and current.close > ema_ref)
+            if long
+            else (current.high > ema_ref and current.close < ema_ref)
+        )
+        if not reclaim:
+            return None
+
+        direction = Direction.LONG if long else Direction.SHORT
+        entry = current.close
+        pad = atr * config.TPE_SL_ATR_MULT
+        if long:
+            sl = min(current.low - pad, entry - config.TPE_MIN_SL_POINTS)
+        else:
+            sl = max(current.high + pad, entry + config.TPE_MIN_SL_POINTS)
+        sl_dist = abs(entry - sl)
+        if entry <= 0 or sl_dist <= 0:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.TPE_MIN_SL_PCT <= sl_pct <= config.TPE_MAX_SL_PCT):
+            return None
+
+        swing = (
+            last_swing_high(ctx.candles_15m, lookback=20, width=1)
+            if long
+            else last_swing_low(ctx.candles_15m, lookback=20, width=1)
+        )
+        fallback = (
+            entry + sl_dist * config.TPE_TP_RR
+            if long
+            else entry - sl_dist * config.TPE_TP_RR
+        )
+        if long:
+            tp1 = swing if (swing is not None and swing > entry) else fallback
+        else:
+            tp1 = swing if (swing is not None and swing < entry) else fallback
+        tp1_pct = abs(tp1 - entry) / entry * 100.0
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            direction,
+            entry,
+            sl,
+            tp1,
+            sl_pct,
+            tp1_pct,
+            tp1_pct / sl_pct,
+            htf=True,  # only fires with an aligned 60m trend
+            vol_ratio=0.0,
+            reason="with-trend EMA pullback reclaim",
+        )
+
+
+class OiSpikeReversal(Evaluator):
+    """§10.13 — an OI surge at a key level with a price rejection → reversal."""
+
+    setup_class = SetupClass.OI_SPIKE_REVERSAL
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled or len(ctx.candles_5m) < 2 or len(ctx.candles_15m) < 3:
+            return None
+        if ctx.oi_change_15m_pct < config.OIS_OI_SPIKE_PCT:
+            return None
+        if ctx.current_oi < config.OIS_MIN_OI:
+            return None
+        current, prev = ctx.candles_5m[-1], ctx.candles_5m[-2]
+        atr = ctx.atr14_5m
+        tol = atr * config.OIS_NEAR_LEVEL_ATR_MULT
+        step = config.INSTRUMENTS[ctx.base].round_step if ctx.base in config.INSTRUMENTS else 50.0
+        base_round = round(current.close / step) * step
+        swing_low = last_swing_low(ctx.candles_15m, lookback=20, width=1)
+        swing_high = last_swing_high(ctx.candles_15m, lookback=20, width=1)
+
+        support = _nearest(
+            current.close,
+            [swing_low, ctx.prev_day_low, ctx.prev_day_close, base_round - step, base_round],
+        )
+        if support is not None and abs(current.close - support) <= tol:
+            if is_bullish_rejection(current, prev):
+                target = _nearest_above(
+                    current.close, [swing_high, ctx.opening_range_high, ctx.prev_day_high]
+                )
+                return self._build(ctx, Direction.LONG, current.close, support, target)
+
+        resistance = _nearest(
+            current.close,
+            [swing_high, ctx.prev_day_high, ctx.prev_day_close, base_round, base_round + step],
+        )
+        if resistance is not None and abs(current.close - resistance) <= tol:
+            if is_bearish_rejection(current, prev):
+                target = _nearest_below(
+                    current.close, [swing_low, ctx.opening_range_low, ctx.prev_day_low]
+                )
+                return self._build(ctx, Direction.SHORT, current.close, resistance, target)
+        return None
+
+    def _build(
+        self,
+        ctx: IndiaContext,
+        direction: str,
+        entry: float,
+        level: float,
+        target: float | None,
+    ) -> IndiaSignal | None:
+        if target is None or entry <= 0:
+            return None
+        pad = ctx.atr14_5m * config.OIS_SL_ATR_MULT
+        sl = level - pad if direction == Direction.LONG else level + pad
+        sl_dist = abs(entry - sl)
+        if sl_dist <= 0:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.OIS_MIN_SL_PCT <= sl_pct <= config.OIS_MAX_SL_PCT):
+            return None
+        tp1_pct = abs(target - entry) / entry * 100.0
+        rr = tp1_pct / sl_pct
+        if rr < config.OIS_MIN_RR:
+            return None
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            direction,
+            entry,
+            sl,
+            target,
+            sl_pct,
+            tp1_pct,
+            rr,
+            htf=_reversal_aligned(direction, ctx.regime_60m),
+            vol_ratio=0.0,
+            reason="OI-spike rejection at level",
+        )
+
+
+def _reversal_aligned(direction: str, regime: Regime) -> bool:
+    """Reversal alignment: trend-with or ranging counts (spec §10.13)."""
+    if direction == Direction.LONG:
+        return regime in (Regime.TRENDING_UP, Regime.RANGING)
+    return regime in (Regime.TRENDING_DOWN, Regime.RANGING)

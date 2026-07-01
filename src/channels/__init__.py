@@ -7,8 +7,10 @@ from src.channels.india_scalp import (
     BreakdownShort,
     IndiaVixExtreme,
     LiquiditySweepReversal,
+    OiSpikeReversal,
     OpeningRangeBreakout,
     PcrExtreme,
+    TrendPullbackEma,
     VolumeSurgeBreakout,
 )
 
@@ -17,7 +19,9 @@ __all__ = [
     "Evaluator",
     "IndiaVixExtreme",
     "LiquiditySweepReversal",
+    "OiSpikeReversal",
     "OpeningRangeBreakout",
     "PcrExtreme",
+    "TrendPullbackEma",
     "VolumeSurgeBreakout",
 ]
