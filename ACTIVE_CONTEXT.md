@@ -83,8 +83,8 @@ PR #10: https://github.com/mkmk749278/Lumina-india-engine/pull/10
 | Item | Status | Notes |
 |---|---|---|
 | VPS provisioned | DONE | IP: `95.111.241.97`, domain: `lumintrade.app` |
-| Fyers API app created | DONE | App ID: `PKMQRMWUZG-100`. **Secret key compromised** (shared in chat) — owner must regenerate at myapi.fyers.in |
-| Store Fyers creds in GitHub Secrets | PENDING | After secret key regeneration: `FYERS_CLIENT_ID`, `FYERS_SECRET_KEY` |
+| Fyers API app created | DONE | App ID: `PKMQRMWUZG-100`. Secret key regenerated after chat exposure. |
+| Store Fyers creds in GitHub Secrets | DONE | `FYERS_CLIENT_ID` + `FYERS_SECRET_KEY` stored. |
 | Firebase project | PENDING | |
 | Razorpay account | PENDING | |
 | NSE algo provider empanelment | PENDING | Phase 2 blocker only |
@@ -121,9 +121,9 @@ Multiple evaluators (SR_FLIP, FAR, TPE, VSB, PCR) produce SL distances under the
 
 Decision affects ~5 evaluators' real-market emission rates. Must be resolved before the 30-day quality window starts.
 
-### Fyers secret key compromised
+### Fyers secret key — resolved
 
-Owner shared Fyers API secret key (`VV4BBFGNM2`) in chat. Must regenerate at myapi.fyers.in before storing in GitHub Secrets. The old key should be considered compromised.
+Owner regenerated the Fyers API secret key after chat exposure and stored new credentials in GitHub Secrets. Old key is invalidated.
 
 ### Spec inconsistencies (flagged, not blocking)
 
@@ -136,7 +136,7 @@ Owner shared Fyers API secret key (`VV4BBFGNM2`) in chat. Must regenerate at mya
 ## Open Queue (in priority order)
 
 1. **BLOCKED — PR #10 owner sign-off** — remaining 6 evaluators. Take out of draft to approve.
-2. **Owner action: Regenerate Fyers secret key** — compromised by chat exposure. Store new key in GitHub Secrets.
+2. ~~Owner action: Regenerate Fyers secret key~~ — DONE. New key in GitHub Secrets.
 3. ~~CTE: Create GitHub repos~~ — DONE
 4. ~~CTE: Engine skeleton~~ — DONE (PR #2)
 5. ~~CTE: Market substrate~~ — DONE (PRs #3–#4)
