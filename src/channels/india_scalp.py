@@ -11,9 +11,14 @@ import uuid
 
 import config
 from src.channels.base import Evaluator
-from src.indicators import ema, rsi
+from src.indicators import atr as compute_atr
+from src.indicators import bollinger, ema, ema_series, rsi
+from src.level_book import LevelBook
 from src.market.candle import Candle
-from src.patterns import is_bearish_rejection, is_bullish_rejection
+from src.patterns import (
+    is_bearish_rejection,
+    is_bullish_rejection,
+)
 from src.regime import Regime
 from src.signals.model import Direction, IndiaContext, IndiaSignal, SetupClass
 from src.structure_state import last_swing_high, last_swing_low
@@ -653,3 +658,645 @@ def _reversal_aligned(direction: str, regime: Regime) -> bool:
     if direction == Direction.LONG:
         return regime in (Regime.TRENDING_UP, Regime.RANGING)
     return regime in (Regime.TRENDING_DOWN, Regime.RANGING)
+
+
+class SrFlipRetest(Evaluator):
+    """§10.6 — broken S/R flips role; retest with rejection → entry.
+
+    Short-only by default (SR_FLIP_LONG_ENABLED=false). Uses LevelBook for
+    the flip detection: a level that was support, broken cleanly, and now acts
+    as resistance on the retest (or vice versa for longs).
+    """
+
+    setup_class = SetupClass.SR_FLIP_RETEST
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled:
+            return None
+        if len(ctx.candles_5m) < 2 or len(ctx.candles_15m) < 6:
+            return None
+        current, prev = ctx.candles_5m[-1], ctx.candles_5m[-2]
+        atr5 = ctx.atr14_5m
+        if atr5 <= 0:
+            return None
+
+        step = (
+            config.INSTRUMENTS[ctx.base].round_step
+            if ctx.base in config.INSTRUMENTS
+            else 50.0
+        )
+        book = LevelBook.build(
+            ctx.candles_15m,
+            round_step=step,
+            extra=[
+                (ctx.prev_day_high, "prev_day_high"),
+                (ctx.prev_day_low, "prev_day_low"),
+                (ctx.prev_day_close, "prev_day_close"),
+            ],
+            swing_width=1,
+            merge_tol=atr5 * 0.2,
+        )
+
+        if len(ctx.candles_15m) < 15:
+            atr15 = atr5
+        else:
+            try:
+                atr15 = compute_atr(ctx.candles_15m, 14)
+            except ValueError:
+                atr15 = atr5
+
+        flip_tol = atr15 * config.SRF_FLIP_ATR_MULT
+        retest_tol = atr5 * config.SRF_RETEST_ATR_MULT
+
+        if config.SRF_SHORT_ENABLED:
+            resistance = book.nearest_resistance(current.close)
+            if resistance is not None:
+                broke_below = any(
+                    c.close < resistance.price - flip_tol
+                    for c in ctx.candles_15m[-10:]
+                )
+                near_retest = (
+                    abs(current.close - resistance.price) <= retest_tol
+                )
+                if broke_below and near_retest:
+                    if is_bearish_rejection(current, prev):
+                        return self._build(
+                            ctx, Direction.SHORT, current, resistance.price,
+                            book,
+                        )
+
+        if config.SRF_LONG_ENABLED:
+            support = book.nearest_support(current.close)
+            if support is not None:
+                broke_above = any(
+                    c.close > support.price + flip_tol
+                    for c in ctx.candles_15m[-10:]
+                )
+                near_retest = abs(current.close - support.price) <= retest_tol
+                if broke_above and near_retest:
+                    if is_bullish_rejection(current, prev):
+                        return self._build(
+                            ctx, Direction.LONG, current, support.price, book
+                        )
+
+        return None
+
+    def _build(
+        self,
+        ctx: IndiaContext,
+        direction: str,
+        bar: Candle,
+        level: float,
+        book: LevelBook,
+    ) -> IndiaSignal | None:
+        entry = bar.close
+        pad = ctx.atr14_5m * config.SRF_SL_ATR_MULT
+        if direction == Direction.SHORT:
+            sl = bar.high + pad
+            target_level = book.nearest_support(entry)
+        else:
+            sl = bar.low - pad
+            target_level = book.nearest_resistance(entry)
+
+        sl_dist = abs(entry - sl)
+        if entry <= 0 or sl_dist <= 0:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.SRF_MIN_SL_PCT <= sl_pct <= config.SRF_MAX_SL_PCT):
+            return None
+
+        fallback = (
+            entry - sl_dist * config.SRF_MIN_RR
+            if direction == Direction.SHORT
+            else entry + sl_dist * config.SRF_MIN_RR
+        )
+        if target_level is not None:
+            candidate = target_level.price
+            cand_rr = abs(candidate - entry) / sl_dist if sl_dist > 0 else 0
+            tp1 = candidate if cand_rr >= config.SRF_MIN_RR else fallback
+        else:
+            tp1 = fallback
+        tp1_pct = abs(tp1 - entry) / entry * 100.0
+        rr = tp1_pct / sl_pct if sl_pct > 0 else 0.0
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            direction,
+            entry,
+            sl,
+            tp1,
+            sl_pct,
+            tp1_pct,
+            rr,
+            htf=_reversal_aligned(direction, ctx.regime_60m),
+            vol_ratio=0.0,
+            reason="SR-flip retest rejection",
+        )
+
+
+class FailedAuctionReclaim(Evaluator):
+    """§10.9 — false breakout above OR_HIGH / below OR_LOW then reclaim.
+
+    The "trap and reverse": weak hands flushed on the false break, strong
+    hands enter on the reclaim bar with volume.
+    """
+
+    setup_class = SetupClass.FAILED_AUCTION_RECLAIM
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled:
+            return None
+        n = len(ctx.candles_5m)
+        if n < config.FAR_SL_LOOKBACK + 1 or ctx.volume_avg_5m_20 <= 0:
+            return None
+        orh, orl = ctx.opening_range_high, ctx.opening_range_low
+        current = ctx.candles_5m[-1]
+        lookback = ctx.candles_5m[-config.FAR_SL_LOOKBACK - 1 : -1]
+        vol_ratio = current.volume / ctx.volume_avg_5m_20
+
+        if vol_ratio < config.FAR_VOLUME_MULT:
+            return None
+
+        levels_above = [
+            lv
+            for lv in [orh, ctx.prev_day_high]
+            if lv is not None and lv > 0
+        ]
+        levels_below = [
+            lv
+            for lv in [orl, ctx.prev_day_low]
+            if lv is not None and lv > 0
+        ]
+
+        for level in levels_above:
+            false_break = any(c.high > level and c.close < level for c in lookback)
+            reclaim = current.close > level
+            if false_break and reclaim:
+                sl = min(c.low for c in lookback)
+                return self._build(
+                    ctx, Direction.LONG, current.close, sl, level
+                )
+
+        for level in levels_below:
+            false_break = any(c.low < level and c.close > level for c in lookback)
+            reclaim = current.close < level
+            if false_break and reclaim:
+                sl = max(c.high for c in lookback)
+                return self._build(
+                    ctx, Direction.SHORT, current.close, sl, level
+                )
+
+        return None
+
+    def _build(
+        self,
+        ctx: IndiaContext,
+        direction: str,
+        entry: float,
+        sl: float,
+        level: float,
+    ) -> IndiaSignal | None:
+        sl_dist = abs(entry - sl)
+        if entry <= 0 or sl_dist <= 0:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.FAR_MIN_SL_PCT <= sl_pct <= config.FAR_MAX_SL_PCT):
+            return None
+
+        swing = (
+            last_swing_high(ctx.candles_15m, lookback=20, width=1)
+            if direction == Direction.LONG
+            else last_swing_low(ctx.candles_15m, lookback=20, width=1)
+        ) if len(ctx.candles_15m) >= 3 else None
+        fallback = (
+            entry + sl_dist * 2.0
+            if direction == Direction.LONG
+            else entry - sl_dist * 2.0
+        )
+        if direction == Direction.LONG:
+            tp1 = swing if (swing is not None and swing > entry) else fallback
+        else:
+            tp1 = swing if (swing is not None and swing < entry) else fallback
+        tp1_pct = abs(tp1 - entry) / entry * 100.0
+        rr = tp1_pct / sl_pct if sl_pct > 0 else 0.0
+        if rr < config.FAR_MIN_RR:
+            return None
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            direction,
+            entry,
+            sl,
+            tp1,
+            sl_pct,
+            tp1_pct,
+            rr,
+            htf=_trend_matches(direction, ctx.regime_60m),
+            vol_ratio=0.0,
+            reason="failed-auction reclaim",
+        )
+
+
+class DivergenceContinuation(Evaluator):
+    """§10.10 — RSI diverges from price → momentum exhaustion signal.
+
+    Bearish divergence (price new high, RSI lower) → SHORT; bullish
+    divergence (price new low, RSI higher) → LONG.
+    """
+
+    setup_class = SetupClass.DIVERGENCE_CONTINUATION
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled:
+            return None
+        lb = config.DIV_LOOKBACK
+        need = lb + 15
+        if len(ctx.candles_5m) < need:
+            return None
+        closes = [c.close for c in ctx.candles_5m]
+        current = ctx.candles_5m[-1]
+        recent = ctx.candles_5m[-lb:]
+        prior_window = ctx.candles_5m[-(lb + lb) : -lb] if len(ctx.candles_5m) >= lb * 2 else []
+
+        if not prior_window:
+            return None
+
+        rsi_now = rsi(closes, 14)
+
+        prior_high_val = max(c.high for c in prior_window)
+        current_high_val = max(c.high for c in recent)
+        prior_high_idx = next(
+            i for i, c in enumerate(ctx.candles_5m)
+            if c.high == prior_high_val
+            and len(ctx.candles_5m) - lb * 2 <= i < len(ctx.candles_5m) - lb
+        )
+        rsi_at_prior_high = rsi(closes[: prior_high_idx + 1], 14) if prior_high_idx >= 15 else None
+
+        if (
+            current_high_val > prior_high_val
+            and rsi_at_prior_high is not None
+            and rsi_now < rsi_at_prior_high
+            and rsi_now > 40
+            and current.close < current.open
+        ):
+            div_high = current_high_val
+            return self._build(ctx, Direction.SHORT, current.close, div_high)
+
+        prior_low_val = min(c.low for c in prior_window)
+        current_low_val = min(c.low for c in recent)
+        prior_low_idx = next(
+            i for i, c in enumerate(ctx.candles_5m)
+            if c.low == prior_low_val
+            and len(ctx.candles_5m) - lb * 2 <= i < len(ctx.candles_5m) - lb
+        )
+        rsi_at_prior_low = rsi(closes[: prior_low_idx + 1], 14) if prior_low_idx >= 15 else None
+
+        if (
+            current_low_val < prior_low_val
+            and rsi_at_prior_low is not None
+            and rsi_now > rsi_at_prior_low
+            and rsi_now < 60
+            and current.close > current.open
+        ):
+            div_low = current_low_val
+            return self._build(ctx, Direction.LONG, current.close, div_low)
+
+        return None
+
+    def _build(
+        self,
+        ctx: IndiaContext,
+        direction: str,
+        entry: float,
+        divergence_extreme: float,
+    ) -> IndiaSignal | None:
+        pad = ctx.atr14_5m * config.DIV_SL_ATR_MULT
+        if direction == Direction.SHORT:
+            sl = divergence_extreme + pad
+        else:
+            sl = divergence_extreme - pad
+        sl_dist = abs(entry - sl)
+        if entry <= 0 or sl_dist <= 0:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.DIV_MIN_SL_PCT <= sl_pct <= config.DIV_MAX_SL_PCT):
+            return None
+
+        if direction == Direction.SHORT:
+            targets: list[float | None] = [
+                ctx.prev_day_low, ctx.opening_range_low,
+            ]
+            target = _nearest_below(entry, targets)
+        else:
+            targets = [ctx.prev_day_high, ctx.opening_range_high]
+            target = _nearest_above(entry, targets)
+        if target is None:
+            target = (
+                entry - sl_dist * 2.0
+                if direction == Direction.SHORT
+                else entry + sl_dist * 2.0
+            )
+        tp1_pct = abs(target - entry) / entry * 100.0
+        rr = tp1_pct / sl_pct if sl_pct > 0 else 0.0
+        if rr < config.DIV_MIN_RR:
+            return None
+
+        htf = (
+            ctx.regime_60m is not Regime.TRENDING_DOWN
+            if direction == Direction.LONG
+            else ctx.regime_60m is not Regime.TRENDING_UP
+        )
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            direction,
+            entry,
+            sl,
+            target,
+            sl_pct,
+            tp1_pct,
+            rr,
+            htf=htf,
+            vol_ratio=0.0,
+            reason="RSI-price divergence",
+        )
+
+
+class QuietCompressionBreak(Evaluator):
+    """§10.11 — Bollinger squeeze breakout during mid-session (10:00–14:00 IST).
+
+    Requires a minimum squeeze duration before the breakout bar, volume
+    confirmation, and a tight stop at the Bollinger midline.
+    """
+
+    setup_class = SetupClass.QUIET_COMPRESSION_BREAK
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled:
+            return None
+        from datetime import time as _time
+
+        if ctx.scan_time_ist is not None:
+            if not (_time(10, 0) <= ctx.scan_time_ist <= _time(14, 0)):
+                return None
+
+        n = len(ctx.candles_5m)
+        need = 20 + config.QCB_MIN_SQUEEZE_BARS
+        if n < need or ctx.volume_avg_5m_20 <= 0:
+            return None
+
+        closes = [c.close for c in ctx.candles_5m]
+        current = ctx.candles_5m[-1]
+        vol_ratio = current.volume / ctx.volume_avg_5m_20
+        if vol_ratio < config.QCB_VOLUME_MULT:
+            return None
+
+        bb_upper, bb_mid, bb_lower = bollinger(closes, 20)
+        if bb_mid <= 0:
+            return None
+
+        squeeze_count = 0
+        for offset in range(1, config.QCB_MIN_SQUEEZE_BARS + 1):
+            prior_closes = closes[: n - offset]
+            if len(prior_closes) < 20:
+                break
+            u, m, lo = bollinger(prior_closes, 20)
+            if m > 0 and (u - lo) / m < config.QCB_BB_SQUEEZE_THRESHOLD:
+                squeeze_count += 1
+
+        if squeeze_count < config.QCB_MIN_SQUEEZE_BARS:
+            return None
+
+        atr5 = ctx.atr14_5m
+        sl_pad = atr5 * config.QCB_SL_ATR_MULT
+
+        if current.close > bb_upper:
+            direction = Direction.LONG
+            entry = current.close
+            sl = bb_mid - sl_pad
+        elif current.close < bb_lower:
+            direction = Direction.SHORT
+            entry = current.close
+            sl = bb_mid + sl_pad
+        else:
+            return None
+
+        sl_dist = abs(entry - sl)
+        if entry <= 0 or sl_dist <= 0:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.QCB_MIN_SL_PCT <= sl_pct <= config.QCB_MAX_SL_PCT):
+            return None
+
+        swing = (
+            last_swing_high(ctx.candles_15m, lookback=20, width=1)
+            if direction == Direction.LONG
+            else last_swing_low(ctx.candles_15m, lookback=20, width=1)
+        ) if len(ctx.candles_15m) >= 3 else None
+        fallback = (
+            entry + sl_dist * config.QCB_MIN_RR
+            if direction == Direction.LONG
+            else entry - sl_dist * config.QCB_MIN_RR
+        )
+        if direction == Direction.LONG:
+            or_target = ctx.opening_range_high
+            tp1 = swing if (swing is not None and swing > entry) else fallback
+            if or_target is not None and or_target > entry:
+                tp1 = min(tp1, or_target)
+        else:
+            or_target = ctx.opening_range_low
+            tp1 = swing if (swing is not None and swing < entry) else fallback
+            if or_target is not None and or_target < entry:
+                tp1 = max(tp1, or_target)
+
+        if direction == Direction.LONG:
+            min_tp = entry + sl_dist * config.QCB_MIN_RR
+        else:
+            min_tp = entry - sl_dist * config.QCB_MIN_RR
+        if direction == Direction.LONG and tp1 < min_tp:
+            tp1 = min_tp
+        if direction == Direction.SHORT and tp1 > min_tp:
+            tp1 = min_tp
+
+        tp1_pct = abs(tp1 - entry) / entry * 100.0
+        rr = tp1_pct / sl_pct if sl_pct > 0 else 0.0
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            direction,
+            entry,
+            sl,
+            tp1,
+            sl_pct,
+            tp1_pct,
+            rr,
+            htf=_trend_matches(direction, ctx.regime_60m),
+            vol_ratio=vol_ratio,
+            reason="Bollinger squeeze breakout",
+        )
+
+
+class MaCrossTrendShift(Evaluator):
+    """§10.12 — EMA21/EMA55 crossover on 15m signals a trend shift.
+
+    HTF filter required: cross must not oppose the 60m regime. Cooldown
+    (once per session) is enforced at the scanner level, not here.
+    """
+
+    setup_class = SetupClass.MA_CROSS_TREND_SHIFT
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled:
+            return None
+        if len(ctx.candles_15m) < 57:
+            return None
+        closes15 = [c.close for c in ctx.candles_15m]
+        ema21_series = ema_series(closes15, 21)
+        ema55_series = ema_series(closes15, 55)
+        ema21_cur = ema21_series[-1]
+        ema55_cur = ema55_series[-1]
+        ema21_prev = ema21_series[-2]
+        ema55_prev = ema55_series[-2]
+
+        if ema21_prev < ema55_prev and ema21_cur > ema55_cur:
+            direction = Direction.LONG
+        elif ema21_prev > ema55_prev and ema21_cur < ema55_cur:
+            direction = Direction.SHORT
+        else:
+            return None
+
+        if direction == Direction.LONG and ctx.regime_60m is Regime.TRENDING_DOWN:
+            return None
+        if direction == Direction.SHORT and ctx.regime_60m is Regime.TRENDING_UP:
+            return None
+
+        cross_bar = ctx.candles_15m[-1]
+        if ctx.volume_avg_15m_20 > 0:
+            if cross_bar.volume / ctx.volume_avg_15m_20 < config.MAC_VOLUME_MULT:
+                return None
+
+        entry = cross_bar.close
+        if len(ctx.candles_15m) >= 15:
+            try:
+                atr15 = compute_atr(ctx.candles_15m, 14)
+            except ValueError:
+                atr15 = ctx.atr14_5m
+        else:
+            atr15 = ctx.atr14_5m
+
+        pad = atr15 * config.MAC_SL_ATR_MULT
+        sl = ema55_cur - pad if direction == Direction.LONG else ema55_cur + pad
+        sl_dist = abs(entry - sl)
+        if entry <= 0 or sl_dist <= 0:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.MAC_MIN_SL_PCT <= sl_pct <= config.MAC_MAX_SL_PCT):
+            return None
+
+        swing = (
+            last_swing_high(ctx.candles_15m, lookback=20, width=1)
+            if direction == Direction.LONG
+            else last_swing_low(ctx.candles_15m, lookback=20, width=1)
+        )
+        fallback = (
+            entry + sl_dist * 2.0
+            if direction == Direction.LONG
+            else entry - sl_dist * 2.0
+        )
+        if direction == Direction.LONG:
+            tp_candidates = [s for s in [swing, ctx.prev_day_high] if s is not None and s > entry]
+            tp1 = min(tp_candidates) if tp_candidates else fallback
+        else:
+            tp_candidates = [s for s in [swing, ctx.prev_day_low] if s is not None and s < entry]
+            tp1 = max(tp_candidates) if tp_candidates else fallback
+        tp1_pct = abs(tp1 - entry) / entry * 100.0
+        rr = tp1_pct / sl_pct if sl_pct > 0 else 0.0
+        if rr < config.MAC_MIN_RR:
+            return None
+
+        htf = (
+            ctx.regime_60m is not Regime.TRENDING_DOWN
+            if direction == Direction.LONG
+            else ctx.regime_60m is not Regime.TRENDING_UP
+        )
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            direction,
+            entry,
+            sl,
+            tp1,
+            sl_pct,
+            tp1_pct,
+            rr,
+            htf=htf,
+            vol_ratio=0.0,
+            reason="EMA21/55 cross on 15m",
+        )
+
+
+class ExpiryGammaSqueeze(Evaluator):
+    """§10.14 — expiry-day gamma squeeze toward max pain (13:00–15:00 IST).
+
+    Only active when ``is_expiry_day`` is True and scan time is in the
+    last-2-hours window. Fires at most once per instrument per session
+    (cooldown enforced at scanner level).
+    """
+
+    setup_class = SetupClass.EXPIRY_GAMMA_SQUEEZE
+    enabled = config.EGS_ENABLED
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled:
+            return None
+        if not ctx.is_expiry_day:
+            return None
+        from datetime import time as _time
+
+        if ctx.scan_time_ist is not None:
+            if not (_time(13, 0) <= ctx.scan_time_ist <= _time(15, 0)):
+                return None
+
+        if ctx.max_pain_strike is None or not ctx.candles_5m:
+            return None
+        last_price = ctx.candles_5m[-1].close
+        if last_price <= 0:
+            return None
+
+        gap_pct = abs(last_price - ctx.max_pain_strike) / last_price * 100.0
+        if not (config.EGS_MIN_DISTANCE_PCT <= gap_pct <= config.EGS_MAX_DISTANCE_PCT):
+            return None
+
+        if ctx.max_pain_strike > last_price:
+            direction = Direction.LONG
+        else:
+            direction = Direction.SHORT
+
+        entry = last_price
+        atr5 = ctx.atr14_5m
+        pad = atr5 * config.EGS_SL_ATR_MULT
+        sl = entry - pad if direction == Direction.LONG else entry + pad
+        sl_dist = abs(entry - sl)
+        if sl_dist <= 0:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.EGS_MIN_SL_PCT <= sl_pct <= config.EGS_MAX_SL_PCT):
+            return None
+
+        tp1 = ctx.max_pain_strike
+        tp1_pct = abs(tp1 - entry) / entry * 100.0
+        rr = tp1_pct / sl_pct if sl_pct > 0 else 0.0
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            direction,
+            entry,
+            sl,
+            tp1,
+            sl_pct,
+            tp1_pct,
+            rr,
+            htf=False,
+            vol_ratio=0.0,
+            reason="expiry-day gamma squeeze toward max pain",
+        )

@@ -223,6 +223,54 @@ OIS_MIN_SL_PCT: float = _safe_float("OIS_MIN_SL_PCT", 0.20)
 OIS_MAX_SL_PCT: float = _safe_float("OIS_MAX_SL_PCT", 1.0)
 OIS_MIN_RR: float = _safe_float("OIS_MIN_RR", 1.5)
 
+# --- evaluator geometry: SR_FLIP_RETEST (spec §10.6) --------------------
+SRF_LONG_ENABLED: bool = _safe_bool("SR_FLIP_LONG_ENABLED", False)
+SRF_SHORT_ENABLED: bool = _safe_bool("SR_FLIP_SHORT_ENABLED", True)
+SRF_FLIP_ATR_MULT: float = _safe_float("SRF_FLIP_ATR_MULT", 0.5)
+SRF_RETEST_ATR_MULT: float = _safe_float("SRF_RETEST_ATR_MULT", 0.3)
+SRF_SL_ATR_MULT: float = _safe_float("SRF_SL_ATR_MULT", 0.3)
+SRF_MIN_SL_PCT: float = _safe_float("SRF_MIN_SL_PCT", 0.20)
+SRF_MAX_SL_PCT: float = _safe_float("SRF_MAX_SL_PCT", 1.50)
+SRF_MIN_RR: float = _safe_float("SRF_MIN_RR", 1.5)
+
+# --- evaluator geometry: FAILED_AUCTION_RECLAIM (spec §10.9) -----------
+FAR_VOLUME_MULT: float = _safe_float("FAR_VOLUME_MULT", 1.2)
+FAR_SL_LOOKBACK: int = _safe_int("FAR_SL_LOOKBACK", 3)
+FAR_MIN_SL_PCT: float = _safe_float("FAR_MIN_SL_PCT", 0.15)
+FAR_MAX_SL_PCT: float = _safe_float("FAR_MAX_SL_PCT", 1.0)
+FAR_MIN_RR: float = _safe_float("FAR_MIN_RR", 1.5)
+
+# --- evaluator geometry: DIVERGENCE_CONTINUATION (spec §10.10) ----------
+DIV_LOOKBACK: int = _safe_int("DIV_LOOKBACK", 10)
+DIV_SL_ATR_MULT: float = _safe_float("DIV_SL_ATR_MULT", 0.3)
+DIV_MIN_SL_PCT: float = _safe_float("DIV_MIN_SL_PCT", 0.20)
+DIV_MAX_SL_PCT: float = _safe_float("DIV_MAX_SL_PCT", 1.20)
+DIV_MIN_RR: float = _safe_float("DIV_MIN_RR", 1.5)
+
+# --- evaluator geometry: QUIET_COMPRESSION_BREAK (spec §10.11) ---------
+QCB_BB_SQUEEZE_THRESHOLD: float = _safe_float("QCB_BB_SQUEEZE_THRESHOLD", 0.002)
+QCB_MIN_SQUEEZE_BARS: int = _safe_int("QCB_MIN_SQUEEZE_BARS", 6)
+QCB_VOLUME_MULT: float = _safe_float("QCB_VOLUME_MULT", 1.5)
+QCB_SL_ATR_MULT: float = _safe_float("QCB_SL_ATR_MULT", 0.1)
+QCB_MIN_SL_PCT: float = _safe_float("QCB_MIN_SL_PCT", 0.10)
+QCB_MAX_SL_PCT: float = _safe_float("QCB_MAX_SL_PCT", 0.60)
+QCB_MIN_RR: float = _safe_float("QCB_MIN_RR", 2.0)
+
+# --- evaluator geometry: MA_CROSS_TREND_SHIFT (spec §10.12) ------------
+MAC_VOLUME_MULT: float = _safe_float("MAC_VOLUME_MULT", 1.2)
+MAC_SL_ATR_MULT: float = _safe_float("MAC_SL_ATR_MULT", 0.3)
+MAC_MIN_SL_PCT: float = _safe_float("MAC_MIN_SL_PCT", 0.20)
+MAC_MAX_SL_PCT: float = _safe_float("MAC_MAX_SL_PCT", 1.0)
+MAC_MIN_RR: float = _safe_float("MAC_MIN_RR", 1.5)
+
+# --- evaluator geometry: EXPIRY_GAMMA_SQUEEZE (spec §10.14) ------------
+EGS_ENABLED: bool = _safe_bool("EXPIRY_GAMMA_SQUEEZE_ENABLED", True)
+EGS_MIN_DISTANCE_PCT: float = _safe_float("EGS_MIN_DISTANCE_PCT", 0.20)
+EGS_MAX_DISTANCE_PCT: float = _safe_float("EGS_MAX_DISTANCE_PCT", 1.0)
+EGS_SL_ATR_MULT: float = _safe_float("EGS_SL_ATR_MULT", 1.0)
+EGS_MIN_SL_PCT: float = _safe_float("EGS_MIN_SL_PCT", 0.20)
+EGS_MAX_SL_PCT: float = _safe_float("EGS_MAX_SL_PCT", 0.80)
+
 # --- data files ----------------------------------------------------------
 _CONFIG_DIR = Path(__file__).resolve().parent
 NSE_HOLIDAYS_FILE: str = _safe_str(
