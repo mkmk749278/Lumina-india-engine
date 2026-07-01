@@ -4,3 +4,4 @@
 # the modules that import it land — we do not pin dependencies nothing uses yet.
 pytz==2024.1
 loguru==0.7.2
+httpx>=0.27.0

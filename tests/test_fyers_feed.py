@@ -1,0 +1,315 @@
+"""FyersDataFeed — historical parsing, tick processing, OI polling."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+
+import config
+from src.broker.fyers_feed import FyersDataFeed, _auth_header
+from src.data.india_market_data import IndiaMarketData
+from src.data.india_oi_store import IndiaOIStore
+from src.data.india_tick_store import IndiaTickStore
+from src.session.expiry_manager import ExpiryManager
+
+IST = config.IST
+_BASE_DT = IST.localize(datetime(2026, 7, 7, 0, 0, 0))
+_SYM = "NSE:NIFTY26JULFUT-FF"
+_BASE = "NIFTY"
+
+
+def _ist(h: int, m: int) -> datetime:
+    return _BASE_DT + timedelta(hours=h, minutes=m)
+
+
+def _make_feed() -> FyersDataFeed:
+    tick = IndiaTickStore()
+    oi = IndiaOIStore()
+    mkt = IndiaMarketData()
+    expiry = ExpiryManager()
+    return FyersDataFeed(tick, oi, mkt, expiry)
+
+
+# ── Auth header ─────────────────────────────────────────────────────────
+
+
+def test_auth_header_format() -> None:
+    h = _auth_header("APP-100", "mytoken123")
+    assert h == {"Authorization": "APP-100:mytoken123"}
+
+
+# ── Historical candle parsing ───────────────────────────────────────────
+
+
+def test_parse_history_candles_valid() -> None:
+    raw = [
+        [1720333500.0, 24000.0, 24010.0, 23990.0, 24005.0, 1500.0],
+        [1720333800.0, 24005.0, 24015.0, 23995.0, 24010.0, 1200.0],
+    ]
+    candles = FyersDataFeed._parse_history_candles(raw)
+    assert len(candles) == 2
+    assert candles[0].open == 24000.0
+    assert candles[0].high == 24010.0
+    assert candles[0].low == 23990.0
+    assert candles[0].close == 24005.0
+    assert candles[0].volume == 1500.0
+    assert candles[0].ts.tzinfo is not None
+
+
+def test_parse_history_candles_empty() -> None:
+    assert FyersDataFeed._parse_history_candles([]) == []
+
+
+def test_parse_history_candles_skips_short_rows() -> None:
+    raw = [
+        [1720333500.0, 24000.0, 24010.0],
+        [1720333800.0, 24005.0, 24015.0, 23995.0, 24010.0, 1200.0],
+    ]
+    candles = FyersDataFeed._parse_history_candles(raw)
+    assert len(candles) == 1
+
+
+# ── Tick processing ─────────────────────────────────────────────────────
+
+
+def test_process_tick_feeds_tick_store() -> None:
+    feed = _make_feed()
+    feed._symbols = {_BASE: _SYM}
+    feed._running = True
+    feed._loop = MagicMock()
+
+    tick_data = {
+        "symbol": _SYM,
+        "ltp": 24100.5,
+        "vol_traded_today": 50000.0,
+        "exch_feed_time": int(_ist(10, 30).timestamp()),
+    }
+
+    feed._process_tick(tick_data)
+
+    assert feed._tick.get_intraday_high(_SYM) == 24100.5
+
+
+def test_process_tick_updates_vix() -> None:
+    feed = _make_feed()
+    feed._running = True
+    feed._loop = MagicMock()
+
+    tick_data = {
+        "symbol": "NSE:INDIAVIX-INDEX",
+        "ltp": 17.5,
+        "vol_traded_today": 0.0,
+        "exch_feed_time": int(_ist(10, 30).timestamp()),
+    }
+
+    feed._process_tick(tick_data)
+    assert feed._mkt.get_vix() == 17.5
+
+
+def test_process_tick_ignores_zero_ltp() -> None:
+    feed = _make_feed()
+    feed._running = True
+    feed._loop = MagicMock()
+
+    tick_data = {"symbol": _SYM, "ltp": 0.0, "vol_traded_today": 100.0}
+    feed._process_tick(tick_data)
+
+
+def test_process_tick_ignores_empty_symbol() -> None:
+    feed = _make_feed()
+    feed._running = True
+    feed._loop = MagicMock()
+
+    tick_data = {"symbol": "", "ltp": 24100.0, "vol_traded_today": 100.0}
+    feed._process_tick(tick_data)
+
+
+# ── OI from quotes ──────────────────────────────────────────────────────
+
+
+async def test_fetch_oi_data_updates_store() -> None:
+    feed = _make_feed()
+    feed._symbols = {_BASE: _SYM}
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "s": "ok",
+        "d": [
+            {
+                "v": {
+                    "symbol": _SYM,
+                    "ltp": 24100.0,
+                    "open_interest": 5_000_000.0,
+                }
+            }
+        ],
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    feed._http = mock_client
+
+    await feed._fetch_oi_data()
+
+    assert feed._oi.get_current_oi(_SYM) == 5_000_000.0
+
+
+async def test_fetch_oi_data_skips_on_error() -> None:
+    feed = _make_feed()
+    feed._symbols = {_BASE: _SYM}
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    feed._http = mock_client
+
+    await feed._fetch_oi_data()
+    assert feed._oi.get_current_oi(_SYM) == 0.0
+
+
+# ── Option chain processing ────────────────────────────────────────────
+
+
+def test_process_option_chain_updates_pcr() -> None:
+    feed = _make_feed()
+
+    chain_data = {
+        "oc": [
+            {
+                "strike_price": 24000.0,
+                "ce": {"oi": 500_000.0},
+                "pe": {"oi": 400_000.0},
+            },
+            {
+                "strike_price": 24100.0,
+                "ce": {"oi": 300_000.0},
+                "pe": {"oi": 600_000.0},
+            },
+        ]
+    }
+
+    feed._process_option_chain(_BASE, chain_data)
+
+    assert not feed._oi.is_pcr_extreme_bearish()
+    assert not feed._oi.is_pcr_extreme_bullish()
+
+
+def test_process_option_chain_computes_max_pain() -> None:
+    feed = _make_feed()
+
+    chain_data = {
+        "oc": [
+            {
+                "strike_price": 24000.0,
+                "ce": {"oi": 1_000_000.0},
+                "pe": {"oi": 200_000.0},
+            },
+            {
+                "strike_price": 24100.0,
+                "ce": {"oi": 200_000.0},
+                "pe": {"oi": 1_000_000.0},
+            },
+        ]
+    }
+
+    feed._process_option_chain(_BASE, chain_data)
+    mp = feed._mkt.get_max_pain(_BASE)
+    assert mp > 0
+
+
+def test_process_option_chain_empty() -> None:
+    feed = _make_feed()
+    feed._process_option_chain(_BASE, {"oc": []})
+
+
+# ── Symbol resolution ───────────────────────────────────────────────────
+
+
+def test_resolve_symbols() -> None:
+    feed = _make_feed()
+    symbols = feed._resolve_symbols(_ist(11, 0))
+    assert "NIFTY" in symbols
+    assert "BANKNIFTY" in symbols
+    for sym in symbols.values():
+        assert sym.startswith("NSE:")
+        assert sym.endswith("FUT-FF")
+
+
+# ── Historical seed with mocked HTTP ────────────────────────────────────
+
+
+async def test_seed_historical_populates_tick_store() -> None:
+    feed = _make_feed()
+    feed._symbols = {_BASE: _SYM}
+
+    now = _ist(10, 0)
+    epoch = int(now.timestamp())
+    candle_data = [
+        [epoch - 600, 24000.0, 24010.0, 23990.0, 24005.0, 1500.0],
+        [epoch - 300, 24005.0, 24015.0, 23995.0, 24010.0, 1200.0],
+    ]
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"s": "ok", "candles": candle_data}
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    feed._http = mock_client
+
+    await feed._seed_historical(now)
+
+    candles = feed._tick.get_candles_5m(_SYM)
+    assert len(candles) == 2
+
+
+async def test_seed_historical_handles_api_error() -> None:
+    feed = _make_feed()
+    feed._symbols = {_BASE: _SYM}
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"s": "error", "message": "invalid token"}
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    feed._http = mock_client
+
+    now = _ist(10, 0)
+    await feed._seed_historical(now)
+
+    candles = feed._tick.get_candles_5m(_SYM)
+    assert len(candles) == 0
+
+
+# ── Start / stop lifecycle ──────────────────────────────────────────────
+
+
+async def test_start_and_stop() -> None:
+    feed = _make_feed()
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"s": "ok", "candles": []}
+    mock_response.raise_for_status = MagicMock()
+
+    with (
+        patch("httpx.AsyncClient") as mock_cls,
+        patch(
+            "src.broker.fyers_feed.FyersDataFeed._start_websocket"
+        ) as mock_ws,
+    ):
+        mock_instance = AsyncMock()
+        mock_instance.get = AsyncMock(return_value=mock_response)
+        mock_instance.aclose = AsyncMock()
+        mock_cls.return_value = mock_instance
+
+        await feed.start("APP-100", "testtoken", now=_ist(10, 0))
+
+        assert feed._running is True
+        assert len(feed.symbols) > 0
+        mock_ws.assert_called_once()
+
+        await feed.stop()
+        assert feed._running is False
