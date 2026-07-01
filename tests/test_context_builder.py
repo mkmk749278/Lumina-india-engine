@@ -1,0 +1,110 @@
+"""IndiaContextBuilder — assembles IndiaContext from all stores."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+import config
+from src.data.india_context_builder import IndiaContextBuilder
+from src.data.india_market_data import IndiaMarketData
+from src.data.india_oi_store import IndiaOIStore
+from src.data.india_tick_store import IndiaTickStore
+from src.market.candle import Candle
+from src.session.expiry_manager import ExpiryManager
+
+IST = config.IST
+_SYM = "NSE:NIFTY26JULFUT-FF"
+_BASE = "NIFTY"
+
+
+_BASE_DT = IST.localize(datetime(2026, 7, 7, 0, 0, 0))
+
+
+def _ist(h: int, m: int) -> datetime:
+    return _BASE_DT + timedelta(hours=h, minutes=m)
+
+
+def _make_stores():
+    tick = IndiaTickStore()
+    oi = IndiaOIStore()
+    mkt = IndiaMarketData()
+    expiry = ExpiryManager()
+
+    candles = [
+        Candle(ts=_ist(9, 15 + i * 5), open=24000.0 + i * 10,
+               high=24010.0 + i * 10, low=23990.0 + i * 10,
+               close=24005.0 + i * 10, volume=1000.0 + i * 50)
+        for i in range(60)
+    ]
+    tick.seed(_SYM, candles)
+
+    oi.update_oi(_SYM, 5_000_000.0, _ist(10, 0))
+    oi.update_pcr(total_put_oi=900_000.0, total_call_oi=1_000_000.0)
+
+    mkt.update_vix(16.5)
+    mkt.update_max_pain(_BASE, 24100.0)
+
+    return tick, oi, mkt, expiry
+
+
+def test_build_returns_india_context() -> None:
+    tick, oi, mkt, expiry = _make_stores()
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+    builder.set_prev_day(_SYM, high=24200.0, low=23800.0, close=24000.0)
+
+    ctx = builder.build(_SYM, _BASE, _ist(11, 0))
+
+    assert ctx.base == _BASE
+    assert ctx.symbol == _SYM
+    assert len(ctx.candles_5m) > 0
+    assert len(ctx.candles_15m) > 0
+    assert len(ctx.candles_60m) > 0
+    assert ctx.india_vix == 16.5
+    assert ctx.max_pain_strike == 24100.0
+    assert ctx.prev_day_high == 24200.0
+    assert ctx.prev_day_low == 23800.0
+    assert ctx.prev_day_close == 24000.0
+    assert ctx.current_oi == 5_000_000.0
+    assert not ctx.pcr_is_extreme_bearish
+    assert not ctx.pcr_is_extreme_bullish
+    assert ctx.tick_size == 0.05
+
+
+def test_build_scan_time_ist_set() -> None:
+    tick, oi, mkt, expiry = _make_stores()
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+
+    ctx = builder.build(_SYM, _BASE, _ist(11, 30))
+
+    assert ctx.scan_time_ist is not None
+    assert ctx.scan_time_ist.hour == 11
+    assert ctx.scan_time_ist.minute == 30
+
+
+def test_build_defaults_when_no_prev_day() -> None:
+    tick, oi, mkt, expiry = _make_stores()
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+
+    ctx = builder.build(_SYM, _BASE, _ist(11, 0))
+
+    assert ctx.prev_day_high == 0.0
+    assert ctx.prev_day_low == 0.0
+    assert ctx.prev_day_close == 0.0
+
+
+def test_build_atr_from_tick_store() -> None:
+    tick, oi, mkt, expiry = _make_stores()
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+
+    ctx = builder.build(_SYM, _BASE, _ist(11, 0))
+
+    assert ctx.atr14_5m > 0.0
+
+
+def test_build_volume_averages() -> None:
+    tick, oi, mkt, expiry = _make_stores()
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+
+    ctx = builder.build(_SYM, _BASE, _ist(11, 0))
+
+    assert ctx.volume_avg_5m_20 > 0.0

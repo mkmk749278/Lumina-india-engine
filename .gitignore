@@ -21,7 +21,7 @@ htmlcov/
 # Local data / secrets (never commit — GitHub Actions secrets only)
 .env
 *.sqlite3
-data/
+/data/
 *.log
 
 # Editor
