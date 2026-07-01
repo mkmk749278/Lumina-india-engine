@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import time
+
 from src.market.candle import Candle
 from src.regime import Regime
 from src.signals.model import Direction, IndiaContext, IndiaSignal, SetupClass
@@ -62,6 +64,10 @@ def make_context(
     intraday_low: float = 0.0,
     candles_60m: list[Candle] | None = None,
     current_oi: float = 0.0,
+    scan_time_ist: time | None = None,
+    is_expiry_day: bool = False,
+    max_pain_strike: float | None = None,
+    volume_avg_15m_20: float = 0.0,
 ) -> IndiaContext:
     if candles_5m is None:
         candles_5m = [
@@ -91,4 +97,8 @@ def make_context(
         intraday_low=intraday_low,
         candles_60m=candles_60m if candles_60m is not None else [],
         current_oi=current_oi,
+        scan_time_ist=scan_time_ist,
+        is_expiry_day=is_expiry_day,
+        max_pain_strike=max_pain_strike,
+        volume_avg_15m_20=volume_avg_15m_20,
     )

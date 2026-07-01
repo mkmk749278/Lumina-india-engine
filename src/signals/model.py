@@ -16,7 +16,7 @@ reads a new field lands — we do not pre-declare context fields nothing reads.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, time
 
 from src.market.candle import Candle
 from src.regime import Regime
@@ -122,3 +122,10 @@ class IndiaContext:
     # 60m candles (trend-pullback EMAs) + absolute OI (OI-spike gate).
     candles_60m: list[Candle] = field(default_factory=list)
     current_oi: float = 0.0
+    # Scan timestamp (IST) for time-windowed evaluators (QCB, EGS).
+    scan_time_ist: time | None = None
+    # Expiry-day flag + max-pain strike (EXPIRY_GAMMA_SQUEEZE).
+    is_expiry_day: bool = False
+    max_pain_strike: float | None = None
+    # 15m volume average for MA_CROSS volume gate.
+    volume_avg_15m_20: float = 0.0
