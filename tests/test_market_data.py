@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from src.data.india_market_data import IndiaMarketData
 
-
 # --- VIX ---
 
 def test_vix_update_and_read() -> None:
