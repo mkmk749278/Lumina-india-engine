@@ -1,0 +1,6 @@
+# Dev / CI tooling — lint, type-check, test. Not shipped in the runtime image.
+ruff==0.4.9
+mypy==1.10.0
+pytest==8.2.2
+pytest-asyncio==0.23.7
+types-pytz==2026.2.0.20260518
