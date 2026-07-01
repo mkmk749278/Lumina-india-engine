@@ -152,6 +152,12 @@ INSTRUMENTS: dict[str, Instrument] = {
 # ATR as a % of price below which the 60m/daily regime is judged QUIET.
 REGIME_QUIET_ATR_PCT: float = _safe_float("REGIME_QUIET_ATR_PCT", 0.15)
 
+# --- confidence tiers ----------------------------------------------------
+# Emit floor and A+ cutoff on the 0-100 confidence score (spec §11/§13.1).
+# Below the floor a candidate is FILTERED (no FCM, no DB write).
+CONFIDENCE_EMIT_FLOOR: float = _safe_float("INDIA_CONFIDENCE_EMIT_FLOOR", 65.0)
+CONFIDENCE_A_PLUS: float = _safe_float("INDIA_CONFIDENCE_A_PLUS", 80.0)
+
 # --- data files ----------------------------------------------------------
 _CONFIG_DIR = Path(__file__).resolve().parent
 NSE_HOLIDAYS_FILE: str = _safe_str(
