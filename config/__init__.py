@@ -204,6 +204,25 @@ PCR_MIN_SL_PCT: float = _safe_float("PCR_MIN_SL_PCT", 0.20)
 PCR_MAX_SL_PCT: float = _safe_float("PCR_MAX_SL_PCT", 1.0)
 PCR_MIN_RR: float = _safe_float("PCR_MIN_RR", 1.5)
 
+# --- evaluator geometry: TREND_PULLBACK_EMA (spec §10.3) ----------------
+TPE_PULLBACK_ATR_MULT: float = _safe_float("TPE_PULLBACK_ATR_MULT", 1.5)
+TPE_RSI_MIN: float = _safe_float("TPE_RSI_MIN", 35.0)
+TPE_RSI_MAX: float = _safe_float("TPE_RSI_MAX", 60.0)
+TPE_SL_ATR_MULT: float = _safe_float("TPE_SL_ATR_MULT", 0.3)
+TPE_MIN_SL_POINTS: float = _safe_float("TPE_MIN_SL_POINTS", 8.0)
+TPE_MIN_SL_PCT: float = _safe_float("TPE_MIN_SL_PCT", 0.15)
+TPE_MAX_SL_PCT: float = _safe_float("TPE_MAX_SL_PCT", 0.80)
+TPE_TP_RR: float = _safe_float("TPE_TP_RR", 2.0)
+
+# --- evaluator geometry: OI_SPIKE_REVERSAL (spec §10.13) ----------------
+OIS_OI_SPIKE_PCT: float = _safe_float("OIS_OI_SPIKE_PCT", 3.0)
+OIS_MIN_OI: float = _safe_float("OIS_MIN_OI", 5_000_000.0)
+OIS_NEAR_LEVEL_ATR_MULT: float = _safe_float("OIS_NEAR_LEVEL_ATR_MULT", 1.0)
+OIS_SL_ATR_MULT: float = _safe_float("OIS_SL_ATR_MULT", 0.5)
+OIS_MIN_SL_PCT: float = _safe_float("OIS_MIN_SL_PCT", 0.20)
+OIS_MAX_SL_PCT: float = _safe_float("OIS_MAX_SL_PCT", 1.0)
+OIS_MIN_RR: float = _safe_float("OIS_MIN_RR", 1.5)
+
 # --- data files ----------------------------------------------------------
 _CONFIG_DIR = Path(__file__).resolve().parent
 NSE_HOLIDAYS_FILE: str = _safe_str(
