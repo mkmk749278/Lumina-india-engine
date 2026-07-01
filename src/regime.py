@@ -14,14 +14,14 @@ Heuristic (tunable, deliberately conservative):
 from __future__ import annotations
 
 from collections.abc import Sequence
-from enum import Enum
+from enum import StrEnum
 
 import config
 from src.indicators import atr, ema
 from src.market.candle import Candle
 
 
-class Regime(str, Enum):
+class Regime(StrEnum):
     TRENDING_UP = "TRENDING_UP"
     TRENDING_DOWN = "TRENDING_DOWN"
     RANGING = "RANGING"
