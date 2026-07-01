@@ -1,0 +1,339 @@
+"""IndiaScanner + GateChain — scan loop, gate suppression, scoring."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+import config
+from src.channels.base import Evaluator
+from src.data.india_context_builder import IndiaContextBuilder
+from src.data.india_market_data import IndiaMarketData
+from src.data.india_oi_store import IndiaOIStore
+from src.data.india_tick_store import IndiaTickStore
+from src.market.candle import Candle
+from src.scanner import GateChain, IndiaScanner
+from src.session.expiry_manager import ExpiryManager
+from src.session.session_manager import SessionManager, SessionState
+from src.signals.model import Direction, IndiaContext, IndiaSignal, SetupClass, Tier
+from tests.candle_factory import c
+from tests.signal_factory import make_context, make_signal
+
+IST = config.IST
+_SYM = "NSE:NIFTY26JULFUT-FF"
+_BASE = "NIFTY"
+
+_BASE_DT = IST.localize(datetime(2026, 7, 7, 0, 0, 0))
+
+
+def _ist(h: int, m: int) -> datetime:
+    return _BASE_DT + timedelta(hours=h, minutes=m)
+
+
+# ── Gate chain tests ─────────────────────────────────────────────────
+
+
+def test_session_gate_suppresses_when_closed() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context()
+    result = chain.check(sig, ctx, SessionState.CLOSED, _ist(8, 0))
+    assert result == "session_gate"
+
+
+def test_session_gate_passes_when_open() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context()
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result is None
+
+
+def test_cooldown_gate_suppresses_recent_fire() -> None:
+    chain = GateChain()
+    sig = make_signal(setup_class=SetupClass.TREND_PULLBACK_EMA)
+    ctx = make_context(base=_BASE)
+    now = _ist(10, 0)
+
+    chain.record_emission(sig.setup_class, _BASE, sig.direction, now)
+
+    result = chain.check(
+        sig, ctx, SessionState.OPEN, now + timedelta(seconds=60)
+    )
+    assert result == "cooldown_gate"
+
+
+def test_cooldown_gate_passes_after_cooldown() -> None:
+    chain = GateChain()
+    sig = make_signal(setup_class=SetupClass.TREND_PULLBACK_EMA)
+    ctx = make_context(base=_BASE)
+    now = _ist(10, 0)
+
+    chain.record_emission(sig.setup_class, _BASE, sig.direction, now)
+
+    result = chain.check(
+        sig, ctx, SessionState.OPEN, now + timedelta(seconds=600)
+    )
+    assert result is None or result != "cooldown_gate"
+
+
+def test_event_risk_gate_suppresses_high_vix() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(india_vix=26.0)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result == "event_risk_gate"
+
+
+def test_event_risk_gate_passes_normal_vix() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(india_vix=15.0)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result is None
+
+
+def test_circuit_check_gate_suppresses_extreme_move() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    candles = [c(high=25300.0, low=25200.0, close=25280.0)]
+    ctx = make_context(candles_5m=candles, day_open=24000.0)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result == "circuit_check_gate"
+
+
+def test_circuit_check_gate_passes_normal_move() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    candles = [c(high=24010.0, low=23990.0, close=24005.0)]
+    ctx = make_context(candles_5m=candles, day_open=24000.0)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result is None
+
+
+def test_min_atr_gate_suppresses_low_atr() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(atr14_5m=1.0)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result == "min_atr_gate"
+
+
+def test_min_atr_gate_passes_normal_atr() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(atr14_5m=10.0)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result is None
+
+
+def test_oi_liquidity_gate_suppresses_low_oi() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(atr14_5m=10.0)
+    object.__setattr__(ctx, "current_oi", 50_000.0)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result == "oi_liquidity_gate"
+
+
+def test_oi_liquidity_gate_passes_zero_oi() -> None:
+    """Zero OI means data not yet available — don't suppress."""
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(atr14_5m=10.0)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result is None
+
+
+def test_duplicate_direction_gate_suppresses() -> None:
+    chain = GateChain()
+    sig = make_signal(direction=Direction.LONG)
+    ctx = make_context(base=_BASE, atr14_5m=10.0)
+    now = _ist(10, 0)
+
+    chain.record_emission(SetupClass.VOLUME_SURGE_BREAKOUT, _BASE, Direction.LONG, now)
+
+    result = chain.check(
+        sig, ctx, SessionState.OPEN, now + timedelta(seconds=600)
+    )
+    assert result == "duplicate_direction_gate"
+
+
+def test_duplicate_direction_gate_passes_different_direction() -> None:
+    chain = GateChain()
+    sig = make_signal(direction=Direction.SHORT)
+    ctx = make_context(base=_BASE, atr14_5m=10.0)
+    now = _ist(10, 0)
+
+    chain.record_emission(SetupClass.VOLUME_SURGE_BREAKOUT, _BASE, Direction.LONG, now)
+
+    result = chain.check(sig, ctx, SessionState.OPEN, now + timedelta(seconds=600))
+    assert result != "duplicate_direction_gate"
+
+
+def test_confidence_floor_gate_suppresses_low_score() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(atr14_5m=10.0)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0), confidence=50.0)
+    assert result == "confidence_floor_gate"
+
+
+def test_confidence_floor_gate_passes_high_score() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(atr14_5m=10.0)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0), confidence=80.0)
+    assert result is None
+
+
+def test_suppressions_logged() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(india_vix=30.0)
+    chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert len(chain.suppressions) == 1
+    assert chain.suppressions[0].gate == "event_risk_gate"
+
+
+def test_reset_day_clears_state() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(india_vix=30.0)
+    chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    chain.record_emission(SetupClass.TREND_PULLBACK_EMA, _BASE, Direction.LONG, _ist(10, 0))
+
+    chain.reset_day()
+
+    assert len(chain.suppressions) == 0
+    assert len(chain._emitted_today) == 0
+
+
+# ── Scanner integration tests ────────────────────────────────────────
+
+class _AlwaysLongEvaluator(Evaluator):
+    setup_class = SetupClass.TREND_PULLBACK_EMA
+    enabled = True
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not ctx.candles_5m:
+            return None
+        entry = ctx.candles_5m[-1].close
+        sl = entry - 20.0
+        tp1 = entry + 60.0
+        return IndiaSignal(
+            signal_id="test",
+            symbol=ctx.symbol,
+            base=ctx.base,
+            direction=Direction.LONG,
+            setup_class=self.setup_class,
+            entry=entry,
+            sl=sl,
+            tp1=tp1,
+            sl_pct=abs(entry - sl) / entry * 100,
+            tp1_pct=abs(tp1 - entry) / entry * 100,
+            rr_ratio=3.0,
+            lot_size=75,
+            htf_trend_aligned=True,
+            breakout_volume_ratio=2.0,
+        )
+
+
+class _NeverFireEvaluator(Evaluator):
+    setup_class = SetupClass.OPENING_RANGE_BREAKOUT
+    enabled = True
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        return None
+
+
+def _make_scanner(evaluators: list[Evaluator] | None = None):
+    tick = IndiaTickStore()
+    oi = IndiaOIStore()
+    mkt = IndiaMarketData()
+    expiry = ExpiryManager()
+
+    candles = [
+        Candle(
+            ts=_ist(9, 15) + timedelta(minutes=i * 5),
+            open=24000.0 + i * 10,
+            high=24010.0 + i * 10,
+            low=23990.0 + i * 10,
+            close=24005.0 + i * 10,
+            volume=1500.0,
+        )
+        for i in range(60)
+    ]
+    tick.seed(_SYM, candles)
+    mkt.update_vix(15.0)
+
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+    builder.set_prev_day(_SYM, high=24200.0, low=23800.0, close=24000.0)
+
+    session = SessionManager()
+    return IndiaScanner(builder, session, expiry, evaluators=evaluators)
+
+
+def test_scanner_emits_signal_during_market_hours() -> None:
+    scanner = _make_scanner([_AlwaysLongEvaluator()])
+    now = _ist(11, 0)
+    symbols = {_BASE: _SYM}
+
+    signals = scanner.scan(symbols, now)
+
+    assert len(signals) == 1
+    assert signals[0].setup_class == SetupClass.TREND_PULLBACK_EMA
+    assert signals[0].direction == Direction.LONG
+    assert signals[0].confidence > 0
+    assert signals[0].tier in (Tier.A_PLUS, Tier.B)
+
+
+def test_scanner_suppresses_outside_market_hours() -> None:
+    scanner = _make_scanner([_AlwaysLongEvaluator()])
+    now = _ist(8, 0)
+    signals = scanner.scan({_BASE: _SYM}, now)
+    assert len(signals) == 0
+
+
+def test_scanner_skips_disabled_evaluator() -> None:
+    ev = _AlwaysLongEvaluator()
+    ev.enabled = False
+    scanner = _make_scanner([ev])
+    signals = scanner.scan({_BASE: _SYM}, _ist(11, 0))
+    assert len(signals) == 0
+
+
+def test_scanner_no_signals_from_never_fire() -> None:
+    scanner = _make_scanner([_NeverFireEvaluator()])
+    signals = scanner.scan({_BASE: _SYM}, _ist(11, 0))
+    assert len(signals) == 0
+
+
+def test_scanner_cooldown_prevents_second_scan() -> None:
+    scanner = _make_scanner([_AlwaysLongEvaluator()])
+    now = _ist(11, 0)
+
+    first = scanner.scan({_BASE: _SYM}, now)
+    assert len(first) == 1
+
+    second = scanner.scan({_BASE: _SYM}, now + timedelta(seconds=30))
+    assert len(second) == 0
+
+
+def test_scanner_reset_day() -> None:
+    scanner = _make_scanner([_AlwaysLongEvaluator()])
+    now = _ist(11, 0)
+
+    scanner.scan({_BASE: _SYM}, now)
+    scanner.reset_day()
+
+    signals = scanner.scan({_BASE: _SYM}, now + timedelta(seconds=600))
+    assert len(signals) == 1
+
+
+def test_scanner_stamps_metadata() -> None:
+    scanner = _make_scanner([_AlwaysLongEvaluator()])
+    signals = scanner.scan({_BASE: _SYM}, _ist(11, 0))
+    sig = signals[0]
+    assert sig.atr_at_entry > 0
+    assert sig.vix_at_entry == 15.0
+    assert sig.expiry_date is not None
