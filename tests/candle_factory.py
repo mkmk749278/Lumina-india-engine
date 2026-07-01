@@ -11,9 +11,23 @@ from src.market.candle import Candle
 _TS = config.IST.localize(datetime(2026, 7, 8, 10, 0))
 
 
-def c(high: float, low: float, close: float, volume: float = 1000.0) -> Candle:
-    """A candle with an arbitrary (fixed) timestamp; open == close for simplicity."""
-    return Candle(ts=_TS, open=close, high=high, low=low, close=close, volume=volume, oi=0.0)
+def c(
+    high: float,
+    low: float,
+    close: float,
+    volume: float = 1000.0,
+    open_: float | None = None,
+) -> Candle:
+    """A candle with an arbitrary (fixed) timestamp; open defaults to close."""
+    return Candle(
+        ts=_TS,
+        open=close if open_ is None else open_,
+        high=high,
+        low=low,
+        close=close,
+        volume=volume,
+        oi=0.0,
+    )
 
 
 def from_closes(prices: Sequence[float], half_range: float = 0.5) -> list[Candle]:

@@ -20,6 +20,11 @@ def test_instruments_lot_sizes() -> None:
     assert config.INSTRUMENTS["BANKNIFTY"].lot_size == 35
 
 
+def test_instrument_round_steps() -> None:
+    assert config.INSTRUMENTS["NIFTY"].round_step == 50.0
+    assert config.INSTRUMENTS["BANKNIFTY"].round_step == 100.0
+
+
 def test_session_clock_is_ordered() -> None:
     assert (
         config.PREOPEN_START
