@@ -132,3 +132,199 @@ class LiquiditySweepReversal(Evaluator):
         if direction == Direction.LONG:
             return regime in (Regime.TRENDING_UP, Regime.RANGING)
         return regime in (Regime.TRENDING_DOWN, Regime.RANGING)
+
+
+def _lot_size(base: str) -> int:
+    return config.INSTRUMENTS[base].lot_size if base in config.INSTRUMENTS else 0
+
+
+def _trend_matches(direction: str, regime: Regime) -> bool:
+    """Strict trend alignment: the 60m regime must be the matching trend."""
+    want = Regime.TRENDING_UP if direction == Direction.LONG else Regime.TRENDING_DOWN
+    return regime is want
+
+
+def _make_signal(
+    ctx: IndiaContext,
+    setup_class: str,
+    direction: str,
+    entry: float,
+    sl: float,
+    tp1: float,
+    sl_pct: float,
+    tp1_pct: float,
+    rr: float,
+    *,
+    htf: bool,
+    vol_ratio: float,
+    reason: str,
+) -> IndiaSignal:
+    return IndiaSignal(
+        signal_id=str(uuid.uuid4()),
+        symbol=ctx.symbol,
+        base=ctx.base,
+        direction=direction,
+        setup_class=setup_class,
+        entry=entry,
+        sl=sl,
+        tp1=tp1,
+        sl_pct=sl_pct,
+        tp1_pct=tp1_pct,
+        rr_ratio=rr,
+        lot_size=_lot_size(ctx.base),
+        htf_trend_aligned=htf,
+        breakout_volume_ratio=vol_ratio,
+        regime_60m=ctx.regime_60m,
+        regime_daily=ctx.regime_daily,
+        atr_at_entry=ctx.atr14_5m,
+        vix_at_entry=ctx.india_vix,
+        setup_reason=reason,
+    )
+
+
+class OpeningRangeBreakout(Evaluator):
+    """§10.2 — a 5m close breaks the 09:15-09:30 opening range with volume."""
+
+    setup_class = SetupClass.OPENING_RANGE_BREAKOUT
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled or not ctx.candles_5m or ctx.volume_avg_5m_20 <= 0:
+            return None
+        orh, orl = ctx.opening_range_high, ctx.opening_range_low
+        if orh is None or orl is None:
+            return None
+        current = ctx.candles_5m[-1]
+        last_price = current.close
+        if last_price <= 0:
+            return None
+        or_range_pct = (orh - orl) / last_price * 100.0
+        if not (config.ORB_MIN_RANGE_PCT <= or_range_pct <= config.ORB_MAX_RANGE_PCT):
+            return None
+        vol_ratio = current.volume / ctx.volume_avg_5m_20
+        if vol_ratio < config.ORB_VOLUME_MULT:
+            return None
+        buf = ctx.atr14_5m * config.ORB_ATR_BUFFER_MULT
+        if current.close > orh + buf:
+            return self._build(ctx, Direction.LONG, orh + buf, orl - buf, vol_ratio)
+        if current.close < orl - buf:
+            return self._build(ctx, Direction.SHORT, orl - buf, orh + buf, vol_ratio)
+        return None
+
+    def _build(
+        self,
+        ctx: IndiaContext,
+        direction: str,
+        entry: float,
+        sl: float,
+        vol_ratio: float,
+    ) -> IndiaSignal | None:
+        sl_dist = abs(entry - sl)
+        if entry <= 0 or sl_dist <= 0:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.ORB_MIN_SL_PCT <= sl_pct <= config.ORB_MAX_SL_PCT):
+            return None
+        tp1 = (
+            entry + sl_dist * config.ORB_TP_RR
+            if direction == Direction.LONG
+            else entry - sl_dist * config.ORB_TP_RR
+        )
+        tp1_pct = abs(tp1 - entry) / entry * 100.0
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            direction,
+            entry,
+            sl,
+            tp1,
+            sl_pct,
+            tp1_pct,
+            tp1_pct / sl_pct,
+            htf=_trend_matches(direction, ctx.regime_60m),
+            vol_ratio=vol_ratio,
+            reason="opening-range breakout",
+        )
+
+
+def _volume_breakout(
+    ctx: IndiaContext, direction: str, setup_class: str
+) -> IndiaSignal | None:
+    """Shared engine for VOLUME_SURGE_BREAKOUT (long) / BREAKDOWN_SHORT (short)."""
+    if not ctx.candles_5m or len(ctx.candles_15m) < 3 or ctx.volume_avg_5m_20 <= 0:
+        return None
+    current = ctx.candles_5m[-1]
+    vol_ratio = current.volume / ctx.volume_avg_5m_20
+    if vol_ratio < config.VSB_VOLUME_MULT:
+        return None
+    if ctx.oi_change_15m_pct < config.VSB_OI_MIN_PCT:
+        return None
+    atr = ctx.atr14_5m
+    if direction == Direction.LONG:
+        level = last_swing_high(ctx.candles_15m, lookback=config.VSB_SWING_LOOKBACK, width=1)
+        if level is None or not (current.high > level and current.close > level):
+            return None
+        entry = level + atr * config.VSB_ENTRY_ATR_MULT
+        base_sl = level - atr * config.VSB_SL_ATR_MULT
+        sl = min(current.open, base_sl) if current.open < level else base_sl
+    else:
+        level = last_swing_low(ctx.candles_15m, lookback=config.VSB_SWING_LOOKBACK, width=1)
+        if level is None or not (current.low < level and current.close < level):
+            return None
+        entry = level - atr * config.VSB_ENTRY_ATR_MULT
+        base_sl = level + atr * config.VSB_SL_ATR_MULT
+        sl = max(current.open, base_sl) if current.open > level else base_sl
+
+    sl_dist = abs(entry - sl)
+    if entry <= 0 or sl_dist <= 0:
+        return None
+    sl_pct = sl_dist / entry * 100.0
+    if not (config.VSB_MIN_SL_PCT <= sl_pct <= config.VSB_MAX_SL_PCT):
+        return None
+    tp1 = (
+        entry + sl_dist * config.VSB_TP_RR
+        if direction == Direction.LONG
+        else entry - sl_dist * config.VSB_TP_RR
+    )
+    tp1_pct = abs(tp1 - entry) / entry * 100.0
+    reason = (
+        "15m swing-high volume breakout"
+        if direction == Direction.LONG
+        else "15m swing-low volume breakdown"
+    )
+    return _make_signal(
+        ctx,
+        setup_class,
+        direction,
+        entry,
+        sl,
+        tp1,
+        sl_pct,
+        tp1_pct,
+        tp1_pct / sl_pct,
+        htf=_trend_matches(direction, ctx.regime_60m),
+        vol_ratio=vol_ratio,
+        reason=reason,
+    )
+
+
+class VolumeSurgeBreakout(Evaluator):
+    """§10.4 — breakout above a 15m swing high with a volume + OI surge (long)."""
+
+    setup_class = SetupClass.VOLUME_SURGE_BREAKOUT
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled:
+            return None
+        return _volume_breakout(ctx, Direction.LONG, self.setup_class)
+
+
+class BreakdownShort(Evaluator):
+    """§10.5 — mirror of VSB below a 15m swing low; independently toggled."""
+
+    setup_class = SetupClass.BREAKDOWN_SHORT
+    enabled = config.BDS_ENABLED
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled:
+            return None
+        return _volume_breakout(ctx, Direction.SHORT, self.setup_class)

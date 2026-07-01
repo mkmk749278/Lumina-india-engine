@@ -167,6 +167,26 @@ LSR_MIN_SL_PCT: float = _safe_float("LSR_MIN_SL_PCT", 0.15)
 LSR_MAX_SL_PCT: float = _safe_float("LSR_MAX_SL_PCT", 1.0)
 LSR_MIN_RR: float = _safe_float("LSR_MIN_RR", 1.5)
 
+# --- evaluator geometry: OPENING_RANGE_BREAKOUT (spec §10.2) -------------
+ORB_MIN_RANGE_PCT: float = _safe_float("ORB_MIN_RANGE_PCT", 0.10)
+ORB_MAX_RANGE_PCT: float = _safe_float("ORB_MAX_RANGE_PCT", 1.50)
+ORB_ATR_BUFFER_MULT: float = _safe_float("ORB_ATR_BUFFER_MULT", 0.1)
+ORB_VOLUME_MULT: float = _safe_float("ORB_VOLUME_MULT", 1.3)
+ORB_MIN_SL_PCT: float = _safe_float("ORB_MIN_SL_PCT", 0.20)
+ORB_MAX_SL_PCT: float = _safe_float("ORB_MAX_SL_PCT", 1.20)
+ORB_TP_RR: float = _safe_float("ORB_TP_RR", 2.0)
+
+# --- evaluator geometry: VOLUME_SURGE_BREAKOUT / BREAKDOWN_SHORT (§10.4/§10.5)
+BDS_ENABLED: bool = _safe_bool("BDS_ENABLED", True)
+VSB_SWING_LOOKBACK: int = _safe_int("VSB_SWING_LOOKBACK", 20)
+VSB_VOLUME_MULT: float = _safe_float("VSB_VOLUME_MULT", 2.0)
+VSB_OI_MIN_PCT: float = _safe_float("VSB_OI_MIN_PCT", 0.5)
+VSB_ENTRY_ATR_MULT: float = _safe_float("VSB_ENTRY_ATR_MULT", 0.05)
+VSB_SL_ATR_MULT: float = _safe_float("VSB_SL_ATR_MULT", 0.3)
+VSB_MIN_SL_PCT: float = _safe_float("VSB_MIN_SL_PCT", 0.15)
+VSB_MAX_SL_PCT: float = _safe_float("VSB_MAX_SL_PCT", 1.0)
+VSB_TP_RR: float = _safe_float("VSB_TP_RR", 2.0)
+
 # --- data files ----------------------------------------------------------
 _CONFIG_DIR = Path(__file__).resolve().parent
 NSE_HOLIDAYS_FILE: str = _safe_str(
