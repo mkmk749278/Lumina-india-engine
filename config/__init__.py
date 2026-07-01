@@ -117,6 +117,8 @@ class Instrument:
     tick_size: float
     expiry_type: str
     min_scalp_points: int
+    # Round-number step treated as an extra S/R level (NIFTY 50, BANKNIFTY 100).
+    round_step: float
 
 
 # Lot sizes are NSE-mandated and revised periodically — verify at bootstrap
@@ -132,6 +134,7 @@ INSTRUMENTS: dict[str, Instrument] = {
         tick_size=_safe_float("NIFTY_TICK_SIZE", 0.05),
         expiry_type="weekly",
         min_scalp_points=_safe_int("NIFTY_MIN_SCALP_POINTS", 15),
+        round_step=_safe_float("NIFTY_ROUND_STEP", 50.0),
     ),
     "BANKNIFTY": Instrument(
         base="BANKNIFTY",
@@ -141,6 +144,7 @@ INSTRUMENTS: dict[str, Instrument] = {
         tick_size=_safe_float("BANKNIFTY_TICK_SIZE", 0.05),
         expiry_type="weekly",
         min_scalp_points=_safe_int("BANKNIFTY_MIN_SCALP_POINTS", 40),
+        round_step=_safe_float("BANKNIFTY_ROUND_STEP", 100.0),
     ),
 }
 
