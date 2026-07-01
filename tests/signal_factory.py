@@ -57,6 +57,9 @@ def make_context(
     opening_range_low: float | None = None,
     symbol: str = "NSE:NIFTY26JULFUT-FF",
     tick_size: float = 0.05,
+    day_open: float = 0.0,
+    intraday_high: float = 0.0,
+    intraday_low: float = 0.0,
 ) -> IndiaContext:
     if candles_5m is None:
         candles_5m = [
@@ -81,4 +84,7 @@ def make_context(
         symbol=symbol,
         tick_size=tick_size,
         candles_15m=candles_15m if candles_15m is not None else [],
+        day_open=day_open,
+        intraday_high=intraday_high,
+        intraday_low=intraday_low,
     )

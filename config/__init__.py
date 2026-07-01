@@ -187,6 +187,23 @@ VSB_MIN_SL_PCT: float = _safe_float("VSB_MIN_SL_PCT", 0.15)
 VSB_MAX_SL_PCT: float = _safe_float("VSB_MAX_SL_PCT", 1.0)
 VSB_TP_RR: float = _safe_float("VSB_TP_RR", 2.0)
 
+# --- evaluator geometry: INDIA_VIX_EXTREME (spec §10.7) -----------------
+# LONG contrarian only for now; the VIX-compression SHORT needs a VIX
+# time-series in context and lands with that data source.
+VIX_EXTREME_HIGH: float = _safe_float("INDIA_VIX_EXTREME_HIGH", 20.0)
+VIX_EXTREME_MIN_DROP_PCT: float = _safe_float("VIX_EXTREME_MIN_DROP_PCT", 1.5)
+VIX_EXTREME_RSI_MAX: float = _safe_float("VIX_EXTREME_RSI_MAX", 35.0)
+VIX_SL_ATR_MULT: float = _safe_float("VIX_SL_ATR_MULT", 0.3)
+VIX_MIN_SL_PCT: float = _safe_float("VIX_MIN_SL_PCT", 0.30)
+VIX_MAX_SL_PCT: float = _safe_float("VIX_MAX_SL_PCT", 1.50)
+
+# --- evaluator geometry: PCR_EXTREME (spec §10.8) -----------------------
+PCR_NEAR_LEVEL_ATR_MULT: float = _safe_float("PCR_NEAR_LEVEL_ATR_MULT", 1.0)
+PCR_SL_ATR_MULT: float = _safe_float("PCR_SL_ATR_MULT", 0.5)
+PCR_MIN_SL_PCT: float = _safe_float("PCR_MIN_SL_PCT", 0.20)
+PCR_MAX_SL_PCT: float = _safe_float("PCR_MAX_SL_PCT", 1.0)
+PCR_MIN_RR: float = _safe_float("PCR_MIN_RR", 1.5)
+
 # --- data files ----------------------------------------------------------
 _CONFIG_DIR = Path(__file__).resolve().parent
 NSE_HOLIDAYS_FILE: str = _safe_str(

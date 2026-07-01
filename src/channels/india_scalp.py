@@ -11,7 +11,9 @@ import uuid
 
 import config
 from src.channels.base import Evaluator
+from src.indicators import rsi
 from src.market.candle import Candle
+from src.patterns import is_bearish_rejection, is_bullish_rejection
 from src.regime import Regime
 from src.signals.model import Direction, IndiaContext, IndiaSignal, SetupClass
 from src.structure_state import last_swing_high, last_swing_low
@@ -328,3 +330,150 @@ class BreakdownShort(Evaluator):
         if not self.enabled:
             return None
         return _volume_breakout(ctx, Direction.SHORT, self.setup_class)
+
+
+class IndiaVixExtreme(Evaluator):
+    """§10.7 — fear spike (VIX high) + sharp drop + oversold bullish reclaim → long.
+
+    Contrarian, regime-neutral by design. Only the LONG (capitulation) branch is
+    implemented; the VIX-compression SHORT needs a VIX time-series in context and
+    lands with that data source.
+    """
+
+    setup_class = SetupClass.INDIA_VIX_EXTREME
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled or len(ctx.candles_5m) < 16:
+            return None
+        if ctx.india_vix <= config.VIX_EXTREME_HIGH or ctx.day_open <= 0:
+            return None
+        if ctx.regime_60m is Regime.TRENDING_DOWN:
+            return None
+        current = ctx.candles_5m[-1]
+        drop_pct = (ctx.day_open - current.close) / ctx.day_open * 100.0
+        if drop_pct < config.VIX_EXTREME_MIN_DROP_PCT:
+            return None
+        if not is_bullish_rejection(current, ctx.candles_5m[-2]):
+            return None
+        if rsi([c.close for c in ctx.candles_5m], 14) >= config.VIX_EXTREME_RSI_MAX:
+            return None
+
+        entry = current.close
+        sl = ctx.intraday_low - ctx.atr14_5m * config.VIX_SL_ATR_MULT
+        tp1 = ctx.prev_day_close
+        sl_dist = entry - sl
+        if entry <= 0 or sl_dist <= 0 or tp1 <= entry:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.VIX_MIN_SL_PCT <= sl_pct <= config.VIX_MAX_SL_PCT):
+            return None
+        tp1_pct = (tp1 - entry) / entry * 100.0
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            Direction.LONG,
+            entry,
+            sl,
+            tp1,
+            sl_pct,
+            tp1_pct,
+            tp1_pct / sl_pct,
+            htf=False,
+            vol_ratio=0.0,
+            reason="VIX-extreme capitulation reclaim",
+        )
+
+
+def _nearest(value: float, candidates: list[float | None]) -> float | None:
+    valid = [x for x in candidates if x is not None]
+    return min(valid, key=lambda x: abs(x - value)) if valid else None
+
+
+class PcrExtreme(Evaluator):
+    """§10.8 — crowded option positioning; fade it at a level with a rejection.
+
+    PCR extreme bearish (crowd holds puts) → contrarian LONG at support; PCR
+    extreme bullish → contrarian SHORT at resistance. Regime-neutral.
+    """
+
+    setup_class = SetupClass.PCR_EXTREME
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        if not self.enabled or len(ctx.candles_5m) < 2 or len(ctx.candles_15m) < 3:
+            return None
+        current, prev = ctx.candles_5m[-1], ctx.candles_5m[-2]
+        atr = ctx.atr14_5m
+        tol = atr * config.PCR_NEAR_LEVEL_ATR_MULT
+        swing_low = last_swing_low(ctx.candles_15m, lookback=20, width=1)
+        swing_high = last_swing_high(ctx.candles_15m, lookback=20, width=1)
+
+        if ctx.pcr_is_extreme_bearish:
+            level = _nearest(
+                current.close, [swing_low, ctx.prev_day_low, ctx.prev_day_close]
+            )
+            if level is None or abs(current.close - level) > tol:
+                return None
+            if ctx.oi_change_15m_pct <= 0 or not is_bullish_rejection(current, prev):
+                return None
+            target = _nearest_above(current.close, [swing_high, ctx.opening_range_high])
+            return self._build(ctx, Direction.LONG, current.close, level, target)
+
+        if ctx.pcr_is_extreme_bullish:
+            level = _nearest(
+                current.close, [swing_high, ctx.prev_day_high, ctx.prev_day_close]
+            )
+            if level is None or abs(current.close - level) > tol:
+                return None
+            if ctx.oi_change_15m_pct <= 0 or not is_bearish_rejection(current, prev):
+                return None
+            target = _nearest_below(current.close, [swing_low, ctx.opening_range_low])
+            return self._build(ctx, Direction.SHORT, current.close, level, target)
+
+        return None
+
+    def _build(
+        self,
+        ctx: IndiaContext,
+        direction: str,
+        entry: float,
+        level: float,
+        target: float | None,
+    ) -> IndiaSignal | None:
+        if target is None or entry <= 0:
+            return None
+        pad = ctx.atr14_5m * config.PCR_SL_ATR_MULT
+        sl = level - pad if direction == Direction.LONG else level + pad
+        sl_dist = abs(entry - sl)
+        if sl_dist <= 0:
+            return None
+        sl_pct = sl_dist / entry * 100.0
+        if not (config.PCR_MIN_SL_PCT <= sl_pct <= config.PCR_MAX_SL_PCT):
+            return None
+        tp1_pct = abs(target - entry) / entry * 100.0
+        rr = tp1_pct / sl_pct
+        if rr < config.PCR_MIN_RR:
+            return None
+        return _make_signal(
+            ctx,
+            self.setup_class,
+            direction,
+            entry,
+            sl,
+            target,
+            sl_pct,
+            tp1_pct,
+            rr,
+            htf=False,
+            vol_ratio=0.0,
+            reason="PCR-extreme contrarian rejection",
+        )
+
+
+def _nearest_above(value: float, candidates: list[float | None]) -> float | None:
+    above = [x for x in candidates if x is not None and x > value]
+    return min(above) if above else None
+
+
+def _nearest_below(value: float, candidates: list[float | None]) -> float | None:
+    below = [x for x in candidates if x is not None and x < value]
+    return max(below) if below else None

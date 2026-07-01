@@ -115,3 +115,7 @@ class IndiaContext:
     symbol: str = ""
     tick_size: float = 0.05
     candles_15m: list[Candle] = field(default_factory=list)
+    # Intraday reference points (session open + running extremes).
+    day_open: float = 0.0
+    intraday_high: float = 0.0
+    intraday_low: float = 0.0
