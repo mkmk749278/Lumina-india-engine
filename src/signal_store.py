@@ -190,4 +190,4 @@ async def get_signal_count_today() -> int:
         "SELECT COUNT(*) FROM india_signals WHERE DATE(created_at) = DATE('now', 'localtime')"
     )
     row = await cursor.fetchone()
-    return row[0] if row else 0
+    return int(row[0]) if row else 0
