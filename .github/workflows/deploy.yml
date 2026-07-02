@@ -89,8 +89,15 @@ jobs:
             fi
 
             # ── Inject secrets ───────────────────────────────────────
+            # Empty secrets are skipped so a deploy never wipes a value
+            # set directly on the VPS (e.g. the daily Fyers token from
+            # scripts/fyers_token.py).
             _inject() {
               local key="$1" val="$2"
+              if [ -z "$val" ]; then
+                echo "skip ${key} (secret not set)"
+                return 0
+              fi
               if grep -q "^${key}=" .env 2>/dev/null; then
                 sed -i "s|^${key}=.*|${key}=${val}|" .env
               else
