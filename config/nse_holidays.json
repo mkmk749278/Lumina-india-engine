@@ -1,11 +1,22 @@
 {
-  "_comment": "NSE equity/F&O trading holidays, YYYY-MM-DD (IST). This list is INCOMPLETE: it contains only fixed-Gregorian statutory holidays that fall on a weekday. Festival-based holidays (Holi, Ram Navami, Mahavir Jayanti, Good Friday, Bakri Id, Ganesh Chaturthi, Dussehra, Diwali/Laxmi Pujan, Balipratipada, Guru Nanak Jayanti, etc.) shift year to year and MUST be added from the official NSE circular before go-live. Set verified=true only once the full official list is entered.",
-  "_source": "https://www.nseindia.com/products-services/equity-market-trading-holidays",
-  "verified": false,
+  "_comment": "NSE equity/F&O trading holidays for calendar year 2026, YYYY-MM-DD (IST). Full official list per NSE circular NSE/CMTR/71775 (Circular Ref. No: 172/2025, dated December 12, 2025). Weekend-falling holidays (Mahashivratri 2026-02-15, Id-Ul-Fitr 2026-03-21, Independence Day 2026-08-15, Diwali Laxmi Pujan 2026-11-08) are omitted — HolidayManager already excludes weekends. Muhurat Trading (Sunday 2026-11-08) is intentionally NOT a scan day. Refresh this list from the official December circular every year.",
+  "_source": "https://nsearchives.nseindia.com/content/circulars/CMTR71775.pdf",
+  "verified": true,
   "holidays": [
     "2026-01-26",
+    "2026-03-03",
+    "2026-03-26",
+    "2026-03-31",
+    "2026-04-03",
+    "2026-04-14",
     "2026-05-01",
+    "2026-05-28",
+    "2026-06-26",
+    "2026-09-14",
     "2026-10-02",
+    "2026-10-20",
+    "2026-11-10",
+    "2026-11-24",
     "2026-12-25"
   ]
 }
