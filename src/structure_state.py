@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from src.market.candle import Candle
 
@@ -26,7 +26,7 @@ class Swing:
     is_high: bool
 
 
-class StructureEvent(str, Enum):
+class StructureEvent(StrEnum):
     BOS_UP = "BOS_UP"
     BOS_DOWN = "BOS_DOWN"
     CHOCH_UP = "CHoCH_UP"

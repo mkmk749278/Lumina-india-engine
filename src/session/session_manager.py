@@ -19,13 +19,13 @@ State timeline on a trading day (IST):
 from __future__ import annotations
 
 from datetime import date, datetime
-from enum import Enum
+from enum import StrEnum
 
 import config
 from src.session.holiday_manager import HolidayManager
 
 
-class SessionState(str, Enum):
+class SessionState(StrEnum):
     CLOSED = "CLOSED"
     PRE_OPEN = "PRE_OPEN"
     OPEN = "OPEN"

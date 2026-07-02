@@ -1,0 +1,51 @@
+networks:
+  india-net:
+    driver: bridge
+
+volumes:
+  india-data:
+  india-redis:
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    container_name: india-redis
+    restart: always
+    networks:
+      - india-net
+    volumes:
+      - india-redis:/data
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  engine:
+    build: .
+    container_name: india-engine
+    env_file: .env
+    restart: always
+    depends_on:
+      - redis
+    networks:
+      - india-net
+    volumes:
+      - india-data:/app/data
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    mem_limit: 1g
+    cpus: "1.5"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
