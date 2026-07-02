@@ -63,18 +63,22 @@ docker compose -f "$COMPOSE_FILE" ps
 # ── Health check ────────────────────────────────────────────────────────
 echo ""
 echo "Health check (up to 120s)..."
+
+API_PORT=$(grep -oP '^API_PORT=\K.*' .env 2>/dev/null || echo "8000")
+API_PORT="${API_PORT:-8000}"
+
 _ok=false
 for _i in $(seq 1 24); do
-    _status=$(docker inspect --format='{{.State.Health.Status}}' india-engine 2>/dev/null || echo "missing")
-    if [ "$_status" = "healthy" ]; then
+    _http=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${API_PORT}/api/health" 2>/dev/null || echo "000")
+    if [ "$_http" = "200" ]; then
         _ok=true
         break
     fi
     sleep 5
 done
 if [ "$_ok" = true ]; then
-    echo "Engine healthy."
+    echo "Engine healthy — API responding on port ${API_PORT}."
 else
-    echo "Engine not healthy within 120s. Check:"
+    echo "API not responding within 120s. Check:"
     echo "    docker logs india-engine --tail 50"
 fi

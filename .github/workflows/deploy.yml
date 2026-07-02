@@ -29,7 +29,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Deploy to VPS
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -63,6 +63,14 @@ jobs:
             fi
             systemctl is-active --quiet docker || systemctl start docker
 
+            # ── Bootstrap: nginx (if missing) ────────────────────────
+            if ! command -v nginx &>/dev/null; then
+              echo "Installing nginx..."
+              apt-get update -qq
+              apt-get install -y -qq nginx >/dev/null
+              systemctl enable nginx && systemctl start nginx
+            fi
+
             # ── Clone / pull repo ────────────────────────────────────
             if [ ! -d "$ENGINE_DIR/.git" ]; then
               echo "Fresh VPS — cloning repository..."
@@ -92,6 +100,12 @@ jobs:
 
             _inject FYERS_CLIENT_ID "${{ secrets.FYERS_CLIENT_ID }}"
             _inject FYERS_ACCESS_TOKEN "${{ secrets.FYERS_ACCESS_TOKEN }}"
+            _inject API_STATIC_TOKEN "${{ secrets.API_STATIC_TOKEN }}"
+
+            # ── Nginx reverse proxy ──────────────────────────────────
+            if [ ! -f /etc/nginx/sites-available/india-engine ]; then
+              bash tools/setup-nginx.sh
+            fi
 
             # ── Deploy containers ────────────────────────────────────
             bash deploy.sh
