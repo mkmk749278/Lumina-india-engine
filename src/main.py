@@ -1,13 +1,13 @@
-"""Engine entry point — session-gated scan loop with Fyers data feed.
+"""Engine entry point — session-gated scan loop with Fyers data feed + API.
 
 Boot sequence:
-  1. Init in-memory data stores (tick, OI, market data)
-  2. Init session/expiry managers, context builder, scanner
-  3. Connect Fyers data feed (if credentials available)
-  4. Run 30s scan loop (scanner's session gate handles market hours)
-  5. Clean shutdown on SIGTERM/SIGINT
-
-Phase 1: scanner + signal emission only. No order execution, no HTTP API.
+  1. Init SQLite tables (signal store)
+  2. Init in-memory data stores (tick, OI, market data)
+  3. Init session/expiry managers, context builder, scanner
+  4. Connect Fyers data feed (if credentials available)
+  5. Start HTTP API server (background task)
+  6. Run 30s scan loop (scanner's session gate handles market hours)
+  7. Clean shutdown on SIGTERM/SIGINT
 """
 
 from __future__ import annotations
@@ -15,26 +15,34 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import time
 from datetime import datetime
 from pathlib import Path
 
 import config
+from src.api.server import build_app, serve_api, set_engine_refs
 from src.broker.fyers_feed import FyersDataFeed
 from src.data.india_context_builder import IndiaContextBuilder
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
+from src.db import close_db
 from src.scanner import SCAN_INTERVAL_SEC, IndiaScanner
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
+from src.signal_router import IndiaSignalRouter
+from src.signal_store import init_tables
 from src.utils import get_logger
 
 logger = get_logger("main")
 
 _HEARTBEAT_PATH = Path("/tmp/india_engine_heartbeat")
+_API_PORT: int = int(os.environ.get("API_PORT", "8000"))
 
 
 async def _run() -> None:
+    await init_tables()
+
     tick = IndiaTickStore()
     oi = IndiaOIStore()
     mkt = IndiaMarketData()
@@ -43,6 +51,7 @@ async def _run() -> None:
 
     ctx_builder = IndiaContextBuilder(tick, oi, mkt, expiry)
     scanner = IndiaScanner(ctx_builder, session, expiry)
+    router = IndiaSignalRouter()
     feed = FyersDataFeed(tick, oi, mkt, expiry)
 
     client_id = os.environ.get("FYERS_CLIENT_ID", "")
@@ -64,16 +73,25 @@ async def _run() -> None:
             " — running without data feed"
         )
 
+    boot_time = time.time()
+    scan_count_ref = [0]
+    session_state_ref = ["UNKNOWN"]
+
+    app = build_app()
+    set_engine_refs(boot_time, scan_count_ref, session_state_ref)
+    api_task = asyncio.create_task(serve_api(app, _API_PORT))
+
+    logger.info(
+        "engine started — scan_interval={}s dev_mode={} api_port={}",
+        SCAN_INTERVAL_SEC,
+        config.INDIA_DEV_MODE,
+        _API_PORT,
+    )
+
     shutdown = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown.set)
-
-    logger.info(
-        "engine started — scan_interval={}s dev_mode={}",
-        SCAN_INTERVAL_SEC,
-        config.INDIA_DEV_MODE,
-    )
 
     prev_state: SessionState | None = None
 
@@ -81,6 +99,7 @@ async def _run() -> None:
         while not shutdown.is_set():
             now = datetime.now(config.IST)
             state = session.current_state(now)
+            session_state_ref[0] = state.value
 
             if state != prev_state:
                 logger.info("session state -> {}", state.value)
@@ -94,6 +113,12 @@ async def _run() -> None:
             if state == SessionState.OPEN or config.INDIA_DEV_MODE:
                 symbols = feed.symbols if feed_active else {}
                 signals = scanner.scan(symbols, now)
+                scan_count_ref[0] += 1
+
+                if signals or scanner.gates.suppressions:
+                    last_suppressions = scanner.gates.suppressions[-50:]
+                    await router.route(signals, last_suppressions)
+
                 for s in signals:
                     logger.info(
                         "EMIT {} {} {} conf={:.0f} tier={}",
@@ -114,8 +139,14 @@ async def _run() -> None:
             except TimeoutError:
                 pass
     finally:
+        api_task.cancel()
+        try:
+            await api_task
+        except asyncio.CancelledError:
+            pass
         if feed_active:
             await feed.stop()
+        await close_db()
         logger.info("engine stopped")
 
 
