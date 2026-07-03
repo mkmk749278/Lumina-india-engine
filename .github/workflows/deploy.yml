@@ -107,7 +107,17 @@ jobs:
 
             _inject FYERS_CLIENT_ID "${{ secrets.FYERS_CLIENT_ID }}"
             _inject FYERS_ACCESS_TOKEN "${{ secrets.FYERS_ACCESS_TOKEN }}"
+            _inject FYERS_SECRET_KEY "${{ secrets.FYERS_SECRET_KEY }}"
+            _inject FYERS_PIN "${{ secrets.FYERS_PIN }}"
             _inject API_STATIC_TOKEN "${{ secrets.API_STATIC_TOKEN }}"
+            chmod 600 .env
+
+            # ── Auto token refresh (cron, 08:45 IST Mon-Fri) ─────────
+            printf '%s\n' \
+              'CRON_TZ=Asia/Kolkata' \
+              '45 8 * * 1-5 root cd /opt/lumin-india && /usr/bin/python3 scripts/fyers_refresh.py --restart >> /var/log/lumin-fyers-refresh.log 2>&1' \
+              > /etc/cron.d/lumin-india-fyers-refresh
+            chmod 644 /etc/cron.d/lumin-india-fyers-refresh
 
             # ── Nginx reverse proxy ──────────────────────────────────
             if [ ! -f /etc/nginx/sites-available/india-engine ]; then

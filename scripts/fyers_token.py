@@ -192,6 +192,7 @@ def main() -> int:
         print(f"error: token exchange failed — {result.get('message', result.get('s'))}")
         return 1
     token = result["access_token"]
+    refresh_token = result.get("refresh_token", "")
 
     print("Verifying token against the profile endpoint...")
     profile = _get_json(
@@ -204,8 +205,21 @@ def main() -> int:
     print(f"Token valid — logged in as: {name}")
 
     _write_env_value(args.env_file, "FYERS_ACCESS_TOKEN", token)
-    print(f"\nToken written to {args.env_file} (not displayed).")
-    print("Restart the engine to pick it up:\n")
+    if refresh_token:
+        _write_env_value(args.env_file, "FYERS_REFRESH_TOKEN", refresh_token)
+        print(
+            "\nAccess + refresh tokens written to "
+            f"{args.env_file} (not displayed)."
+        )
+        print(
+            "Auto-refresh (scripts/fyers_refresh.py, cron 08:45 IST) now covers"
+            "\nthe next ~15 days — no daily login needed until the refresh"
+            "\ntoken itself expires, then run this script once more."
+        )
+    else:
+        print(f"\nToken written to {args.env_file} (not displayed).")
+        print("warning: no refresh_token in response — auto-refresh unavailable")
+    print("\nRestart the engine to pick it up:\n")
     print(
         "   cd /opt/lumin-india && docker compose -f docker-compose.india.yml"
         " up -d --force-recreate engine\n"
