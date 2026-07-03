@@ -42,6 +42,31 @@ API_BASE = "https://api-t1.fyers.in/api/v3"
 DEFAULT_ENV_FILE = "/opt/lumin-india/.env"
 DEFAULT_REDIRECT_URI = "https://trade.fyers.in/api-login/redirect-uri/index.html"
 
+# Fyers sits behind Cloudflare, which 403-blocks the default
+# "Python-urllib/3.x" user agent. Send a normal client identity.
+_HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": "lumin-india-engine/1.0",
+    "Accept": "application/json",
+}
+
+
+def _error_payload(e: urllib.error.HTTPError) -> dict:
+    """Best-effort decode of an HTTP error response.
+
+    Returns the JSON body when there is one; otherwise includes a snippet
+    of the raw body so WAF/HTML blocks are visible instead of a bare code.
+    """
+    try:
+        body = e.read().decode(errors="replace")
+    except Exception:
+        body = ""
+    try:
+        return json.loads(body)
+    except Exception:
+        snippet = " ".join(body.split())[:160]
+        return {"s": "error", "message": f"HTTP {e.code}: {snippet or 'empty body'}"}
+
 
 def _read_env_value(env_file: str, key: str) -> str:
     if not os.path.exists(env_file):
@@ -77,29 +102,23 @@ def _post_json(url: str, payload: dict) -> dict:
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=dict(_HEADERS),
         method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        try:
-            return json.loads(e.read().decode())
-        except Exception:
-            return {"s": "error", "message": f"HTTP {e.code}"}
+        return _error_payload(e)
 
 
 def _get_json(url: str, headers: dict[str, str]) -> dict:
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(url, headers={**_HEADERS, **headers})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        try:
-            return json.loads(e.read().decode())
-        except Exception:
-            return {"s": "error", "message": f"HTTP {e.code}"}
+        return _error_payload(e)
 
 
 def _extract_auth_code(raw: str) -> str:
