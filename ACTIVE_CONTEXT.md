@@ -1,22 +1,29 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-02 (Session 5)
+**Last updated:** 2026-07-03 (Session 6)
 
 ---
 
 ## Current Phase
 
-**Phase 1 — Engine DEPLOYED and LIVE on the VPS. Awaiting Fyers access token for live data.**
+**Phase 1 — LIVE ON REAL NSE DATA since 2026-07-03 12:59 IST.** The 30-day
+signal-quality window (Phase 2 prerequisite) starts counting from today.
 
 Phase 1 goal: Signal delivery to lumin-india-app via FCM + REST. No Telegram. No auto-execution.
 Phase 2 (auto-execution) is locked until SEBI RA registration + NSE empanelment + 30-day signal quality review.
 
-**Live right now on `95.111.241.97`:**
-- `india-engine` container — scanner + API server, healthy, session-gated
-- `india-redis` container — internal
-- nginx on port 80 → API on 127.0.0.1:8000
-- `curl http://95.111.241.97/api/health` → 200 OK
-- Engine runs **without a data feed** until `FYERS_ACCESS_TOKEN` is provided (daily OAuth token — see Open Queue #1)
+**Live right now (`https://lumintrade.app` → `95.111.241.97`):**
+- Fyers data feed connected — historical seed (45×5m candles per base),
+  WebSocket ticks (`NSE:NIFTY26JULFUT`, `NSE:BANKNIFTY26JULFUT`,
+  `NSE:INDIAVIX-INDEX`), 60s OI polling
+- Scanner running every 30s during market hours; verified via `/api/pulse`
+  (`session_state: OPEN`, scan_count climbing)
+- nginx :80 behind Cloudflare (SSL mode **Flexible** — origin-CA cert +
+  Full (strict) still pending, see Open Queue)
+- **Daily owner ritual (trading mornings):** `cd /opt/lumin-india &&
+  FYERS_REDIRECT_URI="https://lumintrade.app/fyers/callback" python3
+  scripts/fyers_token.py` → paste redirect URL + secret key → restart
+  command it prints. Tokens expire daily.
 
 ---
 
@@ -24,7 +31,7 @@ Phase 2 (auto-execution) is locked until SEBI RA registration + NSE empanelment 
 
 | Repo | Purpose | Branch convention | Status |
 |---|---|---|---|
-| `mkmk749278/Lumina-india-engine` | NSE F&O scanner, evaluators, API server, execution (Phase 2) | `feat/`, `fix/`, `docs/`, `chore/` | ACTIVE — 19 PRs merged, deployed to VPS |
+| `mkmk749278/Lumina-india-engine` | NSE F&O scanner, evaluators, API server, execution (Phase 2) | `feat/`, `fix/`, `docs/`, `chore/` | ACTIVE — 22 PRs merged, live on real NSE data |
 | `mkmk749278/lumin-india-app` | Flutter Android app (standalone Play Store listing) | same | ACTIVE — foundation merged (PR #2: signal feed + detail vs live API; PR #3: testing-APK workflow, first build green). Owner device test pending. |
 | `mkmk749278/lumin-india-ops` | Ops dashboard (extends ops.luminapp.org pattern) | same | Needs CLAUDE.md |
 
@@ -53,6 +60,8 @@ Phase 2 (auto-execution) is locked until SEBI RA registration + NSE empanelment 
 | #17 | Dockerfile fix: /app/data writable by appuser |
 | #18 | Verified NSE 2026 holiday calendar (circular NSE/CMTR/71775) |
 | #19 | Daily Fyers token helper (`scripts/fyers_token.py`) + deploy no longer wipes VPS-set `.env` values |
+| #21 | Token helper: Cloudflare UA block fix; engine tests no longer boot real uvicorn (CI hang) |
+| #22 | Fyers data endpoints `/data/*` (were 404 under `/api/v3/`), futures symbol `-FF` suffix removed, `fyers-apiv3` dependency added |
 
 ### Signal delivery path (wired end-to-end as of PR #16)
 
@@ -86,14 +95,14 @@ Auth: static Bearer token (`API_STATIC_TOKEN` GitHub secret → env). Firebase a
 
 | Item | Status | Notes |
 |---|---|---|
-| VPS provisioned | DONE | IP: `95.111.241.97` (fresh Ubuntu reinstall 2026-07-02), domain: `lumintrade.app` (not yet pointed) |
+| VPS provisioned | DONE | IP: `95.111.241.97` (fresh Ubuntu reinstall 2026-07-02), domain: `lumintrade.app` (live) |
 | GitHub Actions deploy | DONE | Push to `main` → SSH deploy → rebuild containers. ssh-action v1.2.2. |
 | GitHub Secrets | DONE | `FYERS_CLIENT_ID`, `FYERS_SECRET_KEY`, `API_STATIC_TOKEN`, `GH_PAT`, `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, `VPS_DEPLOY_PUBKEY` |
 | nginx reverse proxy | DONE | Installed by deploy workflow; `tools/setup-nginx.sh`; rate-limit 60 r/m |
 | NSE holiday calendar | DONE | Verified against NSE circular NSE/CMTR/71775 (all 15 weekday holidays for 2026) |
-| Fyers API app created | DONE | App ID: `PKMQRMWUZG-100`. Secret key regenerated after chat exposure. |
-| **Fyers access token** | **PENDING — blocks live data** | Daily OAuth token. Workflow injects `FYERS_ACCESS_TOKEN` secret, which does not exist yet. |
-| Domain → VPS | PENDING | Point `lumintrade.app` (or subdomain) at `95.111.241.97` via Cloudflare |
+| Fyers API app created | DONE | App ID: `QHX93US4FU-100` (recreated 2026-07-03; redirect URI `https://lumintrade.app/fyers/callback`). |
+| Fyers access token | DONE (daily ritual) | Owner runs `scripts/fyers_token.py` each trading morning. First token validated + live 2026-07-03. |
+| Domain → VPS | DONE | `lumintrade.app` + `api.lumintrade.app` proxied via Cloudflare, HTTPS live (Flexible mode) |
 | Firebase project | PENDING | Needed for FCM dispatcher + app auth |
 | Razorpay account | PENDING | |
 | NSE algo provider empanelment | PENDING | Phase 2 blocker only |
@@ -145,9 +154,9 @@ Fyers OAuth access tokens are valid for one trading day. Until the signing-servi
 
 ## Open Queue (in priority order)
 
-1. **Owner: Fyers access token** — run `python3 scripts/fyers_token.py` in `/opt/lumin-india` on a trading morning (engine PR #19 helper), restart engine. Unblocks live NSE data.
+1. **CTE: verify first live session** — check truth of day-1 scan window at 15:30 close: suppression telemetry (`/api/suppressed`), any signals, WebSocket stability over the full session.
 2. **CTE: FCM dispatcher** — Firebase Admin SDK push on signal emit. Needs Firebase project (owner creates, service-account JSON as GitHub secret).
-3. **Owner: point domain** — `lumintrade.app` (or `api.lumintrade.app`) → `95.111.241.97` via Cloudflare, then confirm HTTPS.
+3. **Owner/CTE: Cloudflare Full (strict)** — generate Origin CA cert (SSL/TLS → Origin Server), install on nginx :443, flip mode from Flexible. Before real subscribers.
 4. **Owner: app device test** — add `INDIA_API_TOKEN` secret on the app repo (same value as engine `API_STATIC_TOKEN`), run the "Build testing APK" workflow, install the artifact, walk feed → detail. Mandatory before further signal-screen work.
 5. **CTE: app auth + FCM screens** — Firebase Phone OTP login + push handling; lands once the Firebase project exists.
 6. **Owner: SL-floor decision** — affects ~5 evaluators (see Known Issues).
@@ -175,3 +184,4 @@ Fyers OAuth access tokens are valid for one trading day. Until the signing-servi
 | 3 | 2026-07-01 | Market substrate, signal model + scoring, all 14 evaluators (PRs #3–#10). 104 tests. PR #9 merged (owner sign-off). Security incident: Fyers secret exposed in chat — regenerated. SL-floor tension identified. |
 | 4 | 2026-07-01 | ACTIVE_CONTEXT sync. PR #10 approved + merged. Data stores (#11), scanner + gates (#12), VPS bootstrap (#13), Fyers feed (#14). |
 | 5 | 2026-07-02 | VPS reinstalled fresh; deploy pipeline fixed (SSH key) and green. Deploy workflow (#15). API server + SQLite persistence + nginx (#16), Dockerfile volume fix (#17). **Engine LIVE on VPS** — `/api/health` + `/api/pulse` responding through nginx. NSE 2026 holiday calendar verified from official circular (#18). Fyers daily-token helper + deploy wipe fix (#19). **App foundation built** (app PRs #2–#3): signal feed + detail vs live API, testing-APK workflow — first APK build green. Engine 207 tests. |
+| 6 | 2026-07-03 | Domain live (Cloudflare Flexible after 521 diagnosis). Fyers token flow debugged end-to-end: redirect-URI mismatch → Cloudflare UA block (#21) → data endpoints under /data/, futures symbol -FF removed, fyers-apiv3 dep (#22). **ENGINE LIVE ON REAL NSE DATA 12:59 IST** — 45 candles seeded/base, WebSocket ticks, scanner OPEN, verified via /api/pulse over HTTPS. Fyers app recreated: QHX93US4FU-100. |
