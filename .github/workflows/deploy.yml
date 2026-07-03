@@ -112,17 +112,13 @@ jobs:
             _inject API_STATIC_TOKEN "${{ secrets.API_STATIC_TOKEN }}"
             chmod 600 .env
 
-            # ── Auto token refresh (cron, 08:45 IST Mon-Fri) ─────────
-            printf '%s\n' \
-              'CRON_TZ=Asia/Kolkata' \
-              '45 8 * * 1-5 root cd /opt/lumin-india && /usr/bin/python3 scripts/fyers_refresh.py --restart >> /var/log/lumin-fyers-refresh.log 2>&1' \
-              > /etc/cron.d/lumin-india-fyers-refresh
-            chmod 644 /etc/cron.d/lumin-india-fyers-refresh
+            # Refresh-token cron removed: Fyers disabled the refresh API
+            # citing SEBI regulations (verified 2026-07-03). Daily token
+            # entry is now the /fyers/callback one-tap flow instead.
+            rm -f /etc/cron.d/lumin-india-fyers-refresh
 
-            # ── Nginx reverse proxy ──────────────────────────────────
-            if [ ! -f /etc/nginx/sites-available/india-engine ]; then
-              bash tools/setup-nginx.sh
-            fi
+            # ── Nginx reverse proxy (idempotent regenerate + reload) ─
+            bash tools/setup-nginx.sh
 
             # ── Deploy containers ────────────────────────────────────
             bash deploy.sh

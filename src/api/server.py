@@ -10,30 +10,100 @@ Endpoints:
   GET /api/signals          — paginated signal list with filters
   GET /api/signals/{id}     — single signal detail
   GET /api/suppressed       — recent gate suppressions
+  GET /fyers/callback       — Fyers OAuth redirect target (daily login)
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 import config
 from src import signal_store
+from src.broker import token_store
 from src.utils import get_logger
 
 logger = get_logger("api")
 
 _STATIC_TOKEN = os.environ.get("API_STATIC_TOKEN", "")
+_FYERS_API_BASE = "https://api-t1.fyers.in/api/v3"
 
 _boot_time: float = 0.0
 _scan_count_ref: list[int] | None = None
 _session_state_ref: list[str] | None = None
+_token_refresh_cb: Callable[[str], Awaitable[None]] | None = None
+
+
+def set_token_refresh_callback(cb: Callable[[str], Awaitable[None]]) -> None:
+    """Engine registers its feed hot-swap here (called on new daily token)."""
+    global _token_refresh_cb
+    _token_refresh_cb = cb
+
+
+async def _exchange_auth_code(auth_code: str) -> str:
+    """Exchange a Fyers auth code for a verified access token.
+
+    Raises ``ValueError`` with a safe, token-free message on any failure.
+    """
+    client_id = os.environ.get("FYERS_CLIENT_ID", "")
+    secret = os.environ.get("FYERS_SECRET_KEY", "")
+    if not client_id or not secret:
+        raise ValueError("engine is missing FYERS_CLIENT_ID / FYERS_SECRET_KEY")
+
+    app_id_hash = hashlib.sha256(f"{client_id}:{secret}".encode()).hexdigest()
+
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        resp = await http.post(
+            f"{_FYERS_API_BASE}/validate-authcode",
+            json={
+                "grant_type": "authorization_code",
+                "appIdHash": app_id_hash,
+                "code": auth_code,
+            },
+        )
+        data = resp.json() if resp.headers.get("content-type", "").startswith(
+            "application/json"
+        ) else {}
+        if data.get("s") != "ok" or not data.get("access_token"):
+            raise ValueError(
+                f"token exchange failed — {data.get('message', f'HTTP {resp.status_code}')}"
+            )
+        token: str = data["access_token"]
+
+        profile = await http.get(
+            f"{_FYERS_API_BASE}/profile",
+            headers={"Authorization": f"{client_id}:{token}"},
+        )
+        pdata = profile.json()
+        if pdata.get("s") != "ok":
+            raise ValueError(
+                f"token verification failed — {pdata.get('message', 'unknown')}"
+            )
+    return token
+
+
+def _callback_page(ok: bool, detail: str) -> str:
+    colour = "#4ADE80" if ok else "#F87171"
+    icon = "✓" if ok else "✕"
+    title = "Token refreshed" if ok else "Refresh failed"
+    return f"""<!doctype html><html><head><meta name="viewport"
+content="width=device-width,initial-scale=1"><title>Lumin India</title></head>
+<body style="background:#0A0E1A;color:#F8FAFC;font-family:sans-serif;
+display:flex;align-items:center;justify-content:center;height:95vh;margin:0">
+<div style="text-align:center;padding:24px">
+<div style="font-size:64px;color:{colour}">{icon}</div>
+<h1 style="font-weight:400">{title}</h1>
+<p style="color:#94A3B8;line-height:1.6">{detail}</p>
+</div></body></html>"""
 
 
 def _check_token(request: Request) -> None:
@@ -110,6 +180,60 @@ def build_app() -> FastAPI:
         limit: int = Query(100, ge=1, le=500),
     ) -> list[dict]:
         return await signal_store.get_suppressions(limit=limit)
+
+    @app.get("/fyers/callback", response_class=HTMLResponse)
+    async def fyers_callback(request: Request) -> HTMLResponse:
+        """Fyers OAuth redirect target — the daily one-tap token refresh.
+
+        Fyers appends ``auth_code`` after the owner's interactive login.
+        The engine exchanges it server-side (it holds the app secret),
+        verifies it, persists it, and hot-swaps the live data feed.
+        No auth needed: a foreign/garbage code fails our appIdHash
+        exchange, and nginx rate-limits the path.
+        """
+        auth_code = request.query_params.get(
+            "auth_code"
+        ) or request.query_params.get("code", "")
+        if not auth_code or len(auth_code) < 20:
+            return HTMLResponse(
+                _callback_page(
+                    False,
+                    "No auth code in the URL. Start from the Fyers login "
+                    "link and let it redirect here.",
+                ),
+                status_code=400,
+            )
+
+        try:
+            token = await _exchange_auth_code(auth_code)
+        except ValueError as e:
+            logger.warning("fyers callback exchange failed: {}", e)
+            return HTMLResponse(_callback_page(False, str(e)), status_code=400)
+
+        token_store.save_token(token)
+
+        if _token_refresh_cb is not None:
+            try:
+                await _token_refresh_cb(token)
+            except Exception:
+                logger.opt(exception=True).error("feed hot-swap failed")
+                return HTMLResponse(
+                    _callback_page(
+                        False,
+                        "Token is valid and saved, but the data feed "
+                        "restart failed — check engine logs.",
+                    ),
+                    status_code=500,
+                )
+
+        logger.info("daily Fyers token refreshed via callback — feed live")
+        return HTMLResponse(
+            _callback_page(
+                True,
+                "Engine is connected to live NSE data. "
+                "You can close this page.",
+            )
+        )
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:

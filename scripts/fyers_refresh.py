@@ -1,4 +1,11 @@
-"""Automated daily Fyers access-token refresh (cron, no human).
+"""Automated daily Fyers access-token refresh via refresh token.
+
+STATUS (2026-07-03): Fyers returns "Refresh token API is currently
+disabled to comply with SEBI regulations" — verified against the live
+endpoint with real credentials. The deploy no longer installs the cron
+for this script; the daily flow is the one-tap ``/fyers/callback``
+endpoint instead. This script is kept ready in case Fyers re-enables
+the refresh API.
 
 Fyers access tokens expire daily, but the refresh token issued alongside
 them is valid ~15 days and can be exchanged for a fresh access token with
