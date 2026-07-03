@@ -259,7 +259,7 @@ class AngelDataFeed:
                         volume=float(r[5]),
                     )
                     for r in rows
-                    if isinstance(r, (list, tuple)) and len(r) >= 6
+                    if isinstance(r, list | tuple) and len(r) >= 6
                 ]
                 if candles:
                     self._tick.seed(tradingsymbol, candles)
