@@ -21,11 +21,13 @@ import asyncio
 import os
 import re
 import threading
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from datetime import time as dt_time
 from typing import Any
 
 import config
+from src.broker.history_utils import prev_session_levels
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
@@ -36,7 +38,8 @@ from src.utils import get_logger
 logger = get_logger("angel_feed")
 
 _RELOGIN_TIME = config._safe_time("ANGEL_RELOGIN_TIME", dt_time(8, 40))
-_HISTORY_HOURS = 6
+_FETCH_WINDOW_HOURS = 96
+_RING_SEED_HOURS = 6
 _EXCHANGE_NFO = 2  # SmartWebSocketV2 exchangeType
 _EXCHANGE_NSE = 1
 _SNAP_QUOTE = 3
@@ -65,7 +68,9 @@ class AngelDataFeed:
         oi_store: IndiaOIStore,
         market_data: IndiaMarketData,
         expiry_mgr: ExpiryManager,
+        on_prev_day: Callable[[str, float, float, float], None] | None = None,
     ) -> None:
+        self._on_prev_day = on_prev_day
         self._tick = tick_store
         self._oi = oi_store
         self._mkt = market_data
@@ -229,9 +234,12 @@ class AngelDataFeed:
     # ── Historical seed ─────────────────────────────────────────────────
 
     def _seed_historical(self) -> None:
+        """Seed the ring buffer and derive previous-session levels (96h
+        fetch reaches the prior session across weekends/holidays)."""
         now = datetime.now(config.IST)
-        frm = (now - timedelta(hours=_HISTORY_HOURS)).strftime("%Y-%m-%d %H:%M")
+        frm = (now - timedelta(hours=_FETCH_WINDOW_HOURS)).strftime("%Y-%m-%d %H:%M")
         to = now.strftime("%Y-%m-%d %H:%M")
+        ring_cutoff = now - timedelta(hours=_RING_SEED_HOURS)
 
         for base, tradingsymbol in self._symbols.items():
             token = next(
@@ -261,13 +269,25 @@ class AngelDataFeed:
                     for r in rows
                     if isinstance(r, list | tuple) and len(r) >= 6
                 ]
-                if candles:
-                    self._tick.seed(tradingsymbol, candles)
-                    logger.info("seeded {} with {} 5m candles", base, len(candles))
-                else:
+                if not candles:
                     logger.warning(
                         "no candles for {}: {}", base, (resp or {}).get("message", "")
                     )
+                    continue
+
+                levels = prev_session_levels(candles, now.date())
+                if levels and self._on_prev_day is not None:
+                    self._on_prev_day(tradingsymbol, *levels)
+                    logger.info(
+                        "prev-day levels for {}: H={:.1f} L={:.1f} C={:.1f}",
+                        base,
+                        *levels,
+                    )
+
+                recent = [c for c in candles if c.ts >= ring_cutoff]
+                if recent:
+                    self._tick.seed(tradingsymbol, recent)
+                    logger.info("seeded {} with {} 5m candles", base, len(recent))
             except Exception:
                 logger.opt(exception=True).warning("historical seed failed for {}", base)
 

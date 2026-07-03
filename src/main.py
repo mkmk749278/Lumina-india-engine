@@ -65,7 +65,9 @@ async def _run() -> None:
 
     feed: AngelDataFeed | FyersDataFeed
     if feed_kind == "angel":
-        angel_feed = AngelDataFeed(tick, oi, mkt, expiry)
+        angel_feed = AngelDataFeed(
+            tick, oi, mkt, expiry, on_prev_day=ctx_builder.set_prev_day
+        )
         feed = angel_feed
         if AngelDataFeed.has_credentials():
             try:
@@ -82,7 +84,9 @@ async def _run() -> None:
                 "ANGEL_PIN / ANGEL_TOTP_SECRET not all set — no data feed"
             )
     else:
-        fyers_feed = FyersDataFeed(tick, oi, mkt, expiry)
+        fyers_feed = FyersDataFeed(
+            tick, oi, mkt, expiry, on_prev_day=ctx_builder.set_prev_day
+        )
         feed = fyers_feed
         client_id = os.environ.get("FYERS_CLIENT_ID", "")
         # Prefer a token delivered via /fyers/callback while a previous
