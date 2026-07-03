@@ -39,6 +39,17 @@ server {
         proxy_connect_timeout 5s;
     }
 
+    # Fyers OAuth redirect target — the owner's daily one-tap token refresh
+    location = /fyers/callback {
+        proxy_pass http://india_api;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_read_timeout 30s;
+        proxy_connect_timeout 5s;
+    }
+
     # Root — health redirect
     location = / {
         return 302 /api/health;

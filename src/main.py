@@ -20,7 +20,13 @@ from datetime import datetime
 from pathlib import Path
 
 import config
-from src.api.server import build_app, serve_api, set_engine_refs
+from src.api.server import (
+    build_app,
+    serve_api,
+    set_engine_refs,
+    set_token_refresh_callback,
+)
+from src.broker import token_store
 from src.broker.fyers_feed import FyersDataFeed
 from src.data.india_context_builder import IndiaContextBuilder
 from src.data.india_market_data import IndiaMarketData
@@ -55,13 +61,18 @@ async def _run() -> None:
     feed = FyersDataFeed(tick, oi, mkt, expiry)
 
     client_id = os.environ.get("FYERS_CLIENT_ID", "")
-    access_token = os.environ.get("FYERS_ACCESS_TOKEN", "")
+    # Prefer a token delivered via /fyers/callback while a previous
+    # container was running — it is fresher than the env snapshot taken
+    # at container create.
+    access_token = token_store.load_token() or os.environ.get(
+        "FYERS_ACCESS_TOKEN", ""
+    )
 
-    feed_active = False
+    feed_active = [False]
     if client_id and access_token:
         try:
             await feed.start(client_id, access_token)
-            feed_active = True
+            feed_active[0] = True
             logger.info("Fyers data feed connected")
         except Exception:
             logger.opt(exception=True).error(
@@ -70,8 +81,21 @@ async def _run() -> None:
     else:
         logger.warning(
             "FYERS_CLIENT_ID / FYERS_ACCESS_TOKEN not set"
-            " — running without data feed"
+            " — running without data feed (use /fyers/callback to connect)"
         )
+
+    async def _on_token_refresh(token: str) -> None:
+        """Hot-swap the data feed onto a new daily token (no restart)."""
+        if not client_id:
+            raise RuntimeError("FYERS_CLIENT_ID not configured on the engine")
+        if feed_active[0]:
+            feed_active[0] = False
+            await feed.stop()
+        await feed.start(client_id, token)
+        feed_active[0] = True
+        logger.info("data feed hot-swapped onto refreshed token")
+
+    set_token_refresh_callback(_on_token_refresh)
 
     boot_time = time.time()
     scan_count_ref = [0]
@@ -111,7 +135,7 @@ async def _run() -> None:
                 prev_state = state
 
             if state == SessionState.OPEN or config.INDIA_DEV_MODE:
-                symbols = feed.symbols if feed_active else {}
+                symbols = feed.symbols if feed_active[0] else {}
                 signals = scanner.scan(symbols, now)
                 scan_count_ref[0] += 1
 
@@ -144,7 +168,7 @@ async def _run() -> None:
             await api_task
         except asyncio.CancelledError:
             pass
-        if feed_active:
+        if feed_active[0]:
             await feed.stop()
         await close_db()
         logger.info("engine stopped")
