@@ -110,6 +110,11 @@ jobs:
             _inject FYERS_SECRET_KEY "${{ secrets.FYERS_SECRET_KEY }}"
             _inject FYERS_PIN "${{ secrets.FYERS_PIN }}"
             _inject API_STATIC_TOKEN "${{ secrets.API_STATIC_TOKEN }}"
+            _inject DATA_FEED "${{ secrets.DATA_FEED }}"
+            _inject ANGEL_API_KEY "${{ secrets.ANGEL_API_KEY }}"
+            _inject ANGEL_CLIENT_CODE "${{ secrets.ANGEL_CLIENT_CODE }}"
+            _inject ANGEL_PIN "${{ secrets.ANGEL_PIN }}"
+            _inject ANGEL_TOTP_SECRET "${{ secrets.ANGEL_TOTP_SECRET }}"
             chmod 600 .env
 
             # Refresh-token cron removed: Fyers disabled the refresh API

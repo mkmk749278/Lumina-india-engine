@@ -7,3 +7,6 @@ uvicorn[standard]>=0.32.0
 aiosqlite>=0.20.0
 # Fyers WebSocket tick feed (fyers_apiv3.FyersWebsocket in src/broker/fyers_feed.py)
 fyers-apiv3>=3.1.0
+# Angel One SmartAPI feed with zero-touch TOTP login (src/broker/angel_feed.py)
+smartapi-python>=1.5.5
+pyotp>=2.9.0
