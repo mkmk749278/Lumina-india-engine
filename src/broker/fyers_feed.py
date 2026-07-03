@@ -22,12 +22,14 @@ Hard limits enforced here:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
 import httpx
 
 import config
+from src.broker.history_utils import prev_session_levels
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
@@ -49,6 +51,8 @@ _OI_POLL_INTERVAL = config._safe_int("FYERS_OI_POLL_SEC", 60)
 _VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
 _HISTORY_RESOLUTION = "5"
 _MAX_CANDLES = 500
+_FETCH_WINDOW_HOURS = 96
+_RING_SEED_HOURS = 6
 
 _REDACTED = "***REDACTED***"
 
@@ -72,7 +76,9 @@ class FyersDataFeed:
         oi_store: IndiaOIStore,
         market_data: IndiaMarketData,
         expiry_mgr: ExpiryManager,
+        on_prev_day: Callable[[str, float, float, float], None] | None = None,
     ) -> None:
+        self._on_prev_day = on_prev_day
         self._tick = tick_store
         self._oi = oi_store
         self._mkt = market_data
@@ -144,11 +150,20 @@ class FyersDataFeed:
     # ── REST: historical seed ───────────────────────────────────────────
 
     async def _seed_historical(self, now: datetime) -> None:
-        """Fetch recent 5m candles from Fyers REST API and seed tick store."""
+        """Seed the tick store and derive previous-session levels.
+
+        The fetch window reaches back far enough (96h) to contain the
+        previous trading session across a weekend or single holiday;
+        prev_session_levels buckets by date and picks the latest pre-today
+        session, so PDH / PDL / prev-close reach the evaluators. Only the
+        recent tail is seeded into the ring buffer to keep its 200-candle
+        budget intact.
+        """
         assert self._http is not None
 
         range_to = int(now.timestamp())
-        range_from = int((now - timedelta(hours=6)).timestamp())
+        range_from = int((now - timedelta(hours=_FETCH_WINDOW_HOURS)).timestamp())
+        ring_cutoff = now - timedelta(hours=_RING_SEED_HOURS)
 
         for base, symbol in self._symbols.items():
             try:
@@ -175,13 +190,25 @@ class FyersDataFeed:
                     continue
 
                 candles = self._parse_history_candles(data.get("candles", []))
-                if candles:
-                    self._tick.seed(symbol, candles)
-                    logger.info(
-                        "seeded {} with {} 5m candles", base, len(candles)
-                    )
-                else:
+                if not candles:
                     logger.warning("no candles returned for {}", base)
+                    continue
+
+                levels = prev_session_levels(candles, now.date())
+                if levels and self._on_prev_day is not None:
+                    self._on_prev_day(symbol, *levels)
+                    logger.info(
+                        "prev-day levels for {}: H={:.1f} L={:.1f} C={:.1f}",
+                        base,
+                        *levels,
+                    )
+
+                recent = [c for c in candles if c.ts >= ring_cutoff]
+                if recent:
+                    self._tick.seed(symbol, recent)
+                    logger.info(
+                        "seeded {} with {} 5m candles", base, len(recent)
+                    )
 
             except httpx.HTTPError:
                 logger.opt(exception=True).warning(
