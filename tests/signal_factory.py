@@ -23,7 +23,7 @@ def make_signal(
     tp1 = entry + 40.0 if direction == Direction.LONG else entry - 40.0
     return IndiaSignal(
         signal_id="test",
-        symbol="NSE:NIFTY26JULFUT-FF",
+        symbol="NSE:NIFTY26JULFUT",
         base="NIFTY",
         direction=direction,
         setup_class=setup_class,
@@ -57,7 +57,7 @@ def make_context(
     pcr_is_extreme_bullish: bool = False,
     opening_range_high: float | None = None,
     opening_range_low: float | None = None,
-    symbol: str = "NSE:NIFTY26JULFUT-FF",
+    symbol: str = "NSE:NIFTY26JULFUT",
     tick_size: float = 0.05,
     day_open: float = 0.0,
     intraday_high: float = 0.0,

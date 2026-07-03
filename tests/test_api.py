@@ -45,7 +45,7 @@ async def client(app):
 def _make_signal(**overrides) -> IndiaSignal:
     defaults = dict(
         signal_id="sig-001",
-        symbol="NSE:NIFTY26JULFUT-FF",
+        symbol="NSE:NIFTY26JULFUT",
         base="NIFTY",
         direction="LONG",
         setup_class="OPENING_RANGE_BREAKOUT",

@@ -8,7 +8,7 @@ import config
 from src.data.india_oi_store import IndiaOIStore
 
 IST = config.IST
-_SYM = "NSE:NIFTY26JULFUT-FF"
+_SYM = "NSE:NIFTY26JULFUT"
 
 
 _BASE_DT = IST.localize(datetime(2026, 7, 7, 0, 0, 0))
