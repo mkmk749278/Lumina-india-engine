@@ -9,7 +9,7 @@ from src.data.india_tick_store import IndiaTickStore, _bar_open_time
 from src.market.candle import Candle
 
 IST = config.IST
-_SYM = "NSE:NIFTY26JULFUT-FF"
+_SYM = "NSE:NIFTY26JULFUT"
 
 
 _BASE_DT = IST.localize(datetime(2026, 7, 7, 0, 0, 0))

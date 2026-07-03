@@ -26,8 +26,8 @@ def test_nearest_weekly_expiry(make_holidays: MakeHolidays) -> None:
 
 def test_symbol_format(make_holidays: MakeHolidays) -> None:
     em = ExpiryManager(make_holidays())
-    assert em.get_active_symbol("NIFTY", _ist(WED)) == "NSE:NIFTY26JULFUT-FF"
-    assert em.get_active_symbol("BANKNIFTY", _ist(WED)) == "NSE:BANKNIFTY26JULFUT-FF"
+    assert em.get_active_symbol("NIFTY", _ist(WED)) == "NSE:NIFTY26JULFUT"
+    assert em.get_active_symbol("BANKNIFTY", _ist(WED)) == "NSE:BANKNIFTY26JULFUT"
 
 
 def test_intraday_roll_on_expiry_day(make_holidays: MakeHolidays) -> None:

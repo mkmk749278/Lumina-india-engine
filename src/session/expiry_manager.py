@@ -52,12 +52,16 @@ class ExpiryManager:
         return (self.get_expiry_date(moment) - moment.date()).days
 
     def get_active_symbol(self, base: str, now: datetime | None = None) -> str:
-        """Fyers v3 symbol for the active weekly contract, e.g. ``NSE:NIFTY26JULFUT-FF``."""
+        """Fyers v3 futures symbol, e.g. ``NSE:NIFTY26JULFUT``.
+
+        Format verified against Fyers' public NSE_FO symbol master — no
+        suffix after ``FUT`` (the spec's ``-FF`` was wrong).
+        """
         self._require_allowed(base)
         expiry = self.get_expiry_date(now)
         year = expiry.strftime("%y")
         month = expiry.strftime("%b").upper()
-        return f"NSE:{base}{year}{month}FUT-FF"
+        return f"NSE:{base}{year}{month}FUT"
 
     @staticmethod
     def _require_allowed(base: str) -> None:

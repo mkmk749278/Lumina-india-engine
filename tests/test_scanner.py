@@ -19,7 +19,7 @@ from tests.candle_factory import c
 from tests.signal_factory import make_context, make_signal
 
 IST = config.IST
-_SYM = "NSE:NIFTY26JULFUT-FF"
+_SYM = "NSE:NIFTY26JULFUT"
 _BASE = "NIFTY"
 
 _BASE_DT = IST.localize(datetime(2026, 7, 7, 0, 0, 0))

@@ -16,7 +16,7 @@ from src.session.expiry_manager import ExpiryManager
 
 IST = config.IST
 _BASE_DT = IST.localize(datetime(2026, 7, 7, 0, 0, 0))
-_SYM = "NSE:NIFTY26JULFUT-FF"
+_SYM = "NSE:NIFTY26JULFUT"
 _BASE = "NIFTY"
 
 
@@ -234,7 +234,7 @@ def test_resolve_symbols() -> None:
     assert "BANKNIFTY" in symbols
     for sym in symbols.values():
         assert sym.startswith("NSE:")
-        assert sym.endswith("FUT-FF")
+        assert sym.endswith("FUT")
 
 
 # ── Historical seed with mocked HTTP ────────────────────────────────────

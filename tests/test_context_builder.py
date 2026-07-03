@@ -13,7 +13,7 @@ from src.market.candle import Candle
 from src.session.expiry_manager import ExpiryManager
 
 IST = config.IST
-_SYM = "NSE:NIFTY26JULFUT-FF"
+_SYM = "NSE:NIFTY26JULFUT"
 _BASE = "NIFTY"
 
 

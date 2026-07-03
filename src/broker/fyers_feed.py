@@ -37,9 +37,13 @@ from src.utils import get_logger
 
 logger = get_logger("fyers_feed")
 
-_API_BASE = "https://api-t1.fyers.in/api/v3"
-_HISTORY_URL = f"{_API_BASE}/history"
-_QUOTES_URL = f"{_API_BASE}/quotes"
+# Fyers v3 splits its REST surface: account/auth endpoints live under
+# /api/v3/, market-data endpoints under /data/ (verified on the wire —
+# /api/v3/history is a hard 404, /data/history authenticates).
+_DATA_BASE = "https://api-t1.fyers.in/data"
+_HISTORY_URL = f"{_DATA_BASE}/history"
+_QUOTES_URL = f"{_DATA_BASE}/quotes"
+_OPTION_CHAIN_URL = f"{_DATA_BASE}/options-chain-v3"
 
 _OI_POLL_INTERVAL = config._safe_int("FYERS_OI_POLL_SEC", 60)
 _VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
@@ -346,7 +350,7 @@ class FyersDataFeed:
 
         try:
             resp = await self._http.get(
-                f"{_API_BASE}/option-chain",
+                _OPTION_CHAIN_URL,
                 params={
                     "symbol": f"NSE:{base}-INDEX",
                     "strikecount": "20",

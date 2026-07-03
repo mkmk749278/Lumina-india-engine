@@ -318,7 +318,7 @@ class IndiaScanner:
         """Run one scan cycle across all symbols.
 
         ``symbols`` maps base name → Fyers symbol
-        (e.g. ``{"NIFTY": "NSE:NIFTY26JULFUT-FF", ...}``).
+        (e.g. ``{"NIFTY": "NSE:NIFTY26JULFUT", ...}``).
 
         Returns emitted (scored, tiered) signals.
         """
