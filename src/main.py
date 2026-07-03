@@ -27,6 +27,7 @@ from src.api.server import (
     set_token_refresh_callback,
 )
 from src.broker import token_store
+from src.broker.angel_feed import AngelDataFeed
 from src.broker.fyers_feed import FyersDataFeed
 from src.data.india_context_builder import IndiaContextBuilder
 from src.data.india_market_data import IndiaMarketData
@@ -58,44 +59,68 @@ async def _run() -> None:
     ctx_builder = IndiaContextBuilder(tick, oi, mkt, expiry)
     scanner = IndiaScanner(ctx_builder, session, expiry)
     router = IndiaSignalRouter()
-    feed = FyersDataFeed(tick, oi, mkt, expiry)
 
-    client_id = os.environ.get("FYERS_CLIENT_ID", "")
-    # Prefer a token delivered via /fyers/callback while a previous
-    # container was running — it is fresher than the env snapshot taken
-    # at container create.
-    access_token = token_store.load_token() or os.environ.get(
-        "FYERS_ACCESS_TOKEN", ""
-    )
-
+    feed_kind = os.environ.get("DATA_FEED", "fyers").strip().lower()
     feed_active = [False]
-    if client_id and access_token:
-        try:
-            await feed.start(client_id, access_token)
-            feed_active[0] = True
-            logger.info("Fyers data feed connected")
-        except Exception:
-            logger.opt(exception=True).error(
-                "Fyers data feed failed to start"
+
+    feed: AngelDataFeed | FyersDataFeed
+    if feed_kind == "angel":
+        angel_feed = AngelDataFeed(tick, oi, mkt, expiry)
+        feed = angel_feed
+        if AngelDataFeed.has_credentials():
+            try:
+                await angel_feed.start()
+                feed_active[0] = True
+                logger.info("Angel One data feed connected (zero-touch auth)")
+            except Exception:
+                logger.opt(exception=True).error(
+                    "Angel One data feed failed to start"
+                )
+        else:
+            logger.warning(
+                "DATA_FEED=angel but ANGEL_API_KEY / ANGEL_CLIENT_CODE / "
+                "ANGEL_PIN / ANGEL_TOTP_SECRET not all set — no data feed"
             )
     else:
-        logger.warning(
-            "FYERS_CLIENT_ID / FYERS_ACCESS_TOKEN not set"
-            " — running without data feed (use /fyers/callback to connect)"
+        fyers_feed = FyersDataFeed(tick, oi, mkt, expiry)
+        feed = fyers_feed
+        client_id = os.environ.get("FYERS_CLIENT_ID", "")
+        # Prefer a token delivered via /fyers/callback while a previous
+        # container was running — it is fresher than the env snapshot
+        # taken at container create.
+        access_token = token_store.load_token() or os.environ.get(
+            "FYERS_ACCESS_TOKEN", ""
         )
 
-    async def _on_token_refresh(token: str) -> None:
-        """Hot-swap the data feed onto a new daily token (no restart)."""
-        if not client_id:
-            raise RuntimeError("FYERS_CLIENT_ID not configured on the engine")
-        if feed_active[0]:
-            feed_active[0] = False
-            await feed.stop()
-        await feed.start(client_id, token)
-        feed_active[0] = True
-        logger.info("data feed hot-swapped onto refreshed token")
+        if client_id and access_token:
+            try:
+                await fyers_feed.start(client_id, access_token)
+                feed_active[0] = True
+                logger.info("Fyers data feed connected")
+            except Exception:
+                logger.opt(exception=True).error(
+                    "Fyers data feed failed to start"
+                )
+        else:
+            logger.warning(
+                "FYERS_CLIENT_ID / FYERS_ACCESS_TOKEN not set"
+                " — running without data feed (use /fyers/callback to connect)"
+            )
 
-    set_token_refresh_callback(_on_token_refresh)
+        async def _on_token_refresh(token: str) -> None:
+            """Hot-swap the Fyers feed onto a new daily token (no restart)."""
+            if not client_id:
+                raise RuntimeError(
+                    "FYERS_CLIENT_ID not configured on the engine"
+                )
+            if feed_active[0]:
+                feed_active[0] = False
+                await fyers_feed.stop()
+            await fyers_feed.start(client_id, token)
+            feed_active[0] = True
+            logger.info("data feed hot-swapped onto refreshed token")
+
+        set_token_refresh_callback(_on_token_refresh)
 
     boot_time = time.time()
     scan_count_ref = [0]
