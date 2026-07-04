@@ -147,6 +147,10 @@ async def _run() -> None:
         loop.add_signal_handler(sig, shutdown.set)
 
     prev_state: SessionState | None = None
+    # How many of the gate chain's (day-cumulative) suppressions have
+    # already been persisted — only the tail beyond this goes to SQLite,
+    # otherwise every scan would re-insert the same rows.
+    persisted_suppressions = 0
 
     try:
         while not shutdown.is_set():
@@ -161,6 +165,7 @@ async def _run() -> None:
                     and prev_state in (SessionState.PRE_OPEN, None)
                 ):
                     scanner.reset_day()
+                    persisted_suppressions = 0
                 prev_state = state
 
             if state == SessionState.OPEN or config.INDIA_DEV_MODE:
@@ -168,9 +173,11 @@ async def _run() -> None:
                 signals = scanner.scan(symbols, now)
                 scan_count_ref[0] += 1
 
-                if signals or scanner.gates.suppressions:
-                    last_suppressions = scanner.gates.suppressions[-50:]
-                    await router.route(signals, last_suppressions)
+                all_suppressions = scanner.gates.suppressions
+                new_suppressions = all_suppressions[persisted_suppressions:]
+                if signals or new_suppressions:
+                    await router.route(signals, new_suppressions)
+                    persisted_suppressions = len(all_suppressions)
 
                 for s in signals:
                     logger.info(
