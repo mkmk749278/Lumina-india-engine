@@ -287,6 +287,7 @@ async def write_session_summary() -> dict:
         """
     )
     sig_row = await cursor.fetchone()
+    assert sig_row is not None  # aggregate query always yields one row
     signal_count, a_plus, b_count, avg_conf = (
         int(sig_row[0]),
         int(sig_row[1]),
@@ -315,6 +316,7 @@ async def write_session_summary() -> dict:
         """
     )
     oc_row = await cursor.fetchone()
+    assert oc_row is not None  # aggregate query always yields one row
 
     summary = {
         "date": None,  # filled by SQL below
