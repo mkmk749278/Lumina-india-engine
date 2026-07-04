@@ -59,11 +59,23 @@ CREATE TABLE IF NOT EXISTS india_suppressions (
 )
 """
 
+_OUTCOMES_DDL = """
+CREATE TABLE IF NOT EXISTS india_signal_outcomes (
+    signal_id   TEXT PRIMARY KEY,
+    outcome     TEXT NOT NULL,
+    exit_price  REAL NOT NULL,
+    points      REAL NOT NULL,
+    resolved_at TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+)
+"""
+
 
 async def init_tables() -> None:
     db = await get_db()
     await db.execute(_SIGNALS_DDL)
     await db.execute(_SUPPRESSIONS_DDL)
+    await db.execute(_OUTCOMES_DDL)
     await db.commit()
 
 
@@ -191,3 +203,62 @@ async def get_signal_count_today() -> int:
     )
     row = await cursor.fetchone()
     return int(row[0]) if row else 0
+
+
+async def insert_outcome(
+    signal_id: str,
+    outcome: str,
+    exit_price: float,
+    points: float,
+    resolved_at: datetime,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT OR IGNORE INTO india_signal_outcomes
+            (signal_id, outcome, exit_price, points, resolved_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (signal_id, outcome, exit_price, points, str(resolved_at)),
+    )
+    await db.commit()
+
+
+async def get_outcomes(date: str | None = None, limit: int = 100) -> list[dict]:
+    """Outcomes joined onto their signals — the quality-window view."""
+    db = await get_db()
+    where = ""
+    params: list[str | int] = []
+    if date:
+        where = "WHERE DATE(o.created_at) = ?"
+        params.append(date)
+    params.append(limit)
+    cursor = await db.execute(
+        f"""
+        SELECT o.signal_id, o.outcome, o.exit_price, o.points, o.resolved_at,
+               s.symbol, s.base, s.direction, s.setup_class, s.tier,
+               s.entry, s.sl, s.tp1, s.created_at AS emitted_at
+        FROM india_signal_outcomes o
+        LEFT JOIN india_signals s ON s.signal_id = o.signal_id
+        {where}
+        ORDER BY o.created_at DESC LIMIT ?
+        """,
+        params,
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_unresolved_signals_today() -> list[dict]:
+    """Today's emitted signals with no outcome yet (restart resume)."""
+    db = await get_db()
+    cursor = await db.execute(
+        """
+        SELECT s.* FROM india_signals s
+        LEFT JOIN india_signal_outcomes o ON o.signal_id = s.signal_id
+        WHERE DATE(s.created_at) = DATE('now', 'localtime')
+          AND o.signal_id IS NULL
+        """
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]

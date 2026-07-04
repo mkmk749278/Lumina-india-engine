@@ -181,6 +181,14 @@ def build_app() -> FastAPI:
     ) -> list[dict]:
         return await signal_store.get_suppressions(limit=limit)
 
+    @app.get("/api/outcomes", dependencies=[Depends(_check_token)])
+    async def outcomes(
+        date: str | None = Query(None, description="Filter by date (YYYY-MM-DD)"),
+        limit: int = Query(100, ge=1, le=500),
+    ) -> list[dict]:
+        """Signal outcomes (TP1_HIT / SL_HIT / EXPIRED) joined onto signals."""
+        return await signal_store.get_outcomes(date=date, limit=limit)
+
     @app.get("/fyers/callback", response_class=HTMLResponse)
     async def fyers_callback(request: Request) -> HTMLResponse:
         """Fyers OAuth redirect target — the daily one-tap token refresh.
