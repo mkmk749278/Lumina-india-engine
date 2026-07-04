@@ -42,6 +42,7 @@ from src.signal_store import (
     get_unresolved_signals_today,
     init_tables,
     insert_outcome,
+    write_session_summary,
 )
 from src.trade_monitor import IndiaTradeMonitor
 from src.utils import get_logger
@@ -184,6 +185,14 @@ async def _run() -> None:
                             oc.points,
                             oc.resolved_at,
                         )
+                    summary = await write_session_summary()
+                    logger.info(
+                        "session summary written: {} signals, "
+                        "{} suppressed, {:+.1f} points",
+                        summary["signal_count"],
+                        summary["total_suppressed"],
+                        summary["total_points"],
+                    )
                 prev_state = state
 
             if state == SessionState.OPEN or config.INDIA_DEV_MODE:

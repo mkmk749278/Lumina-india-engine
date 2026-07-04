@@ -70,12 +70,30 @@ CREATE TABLE IF NOT EXISTS india_signal_outcomes (
 )
 """
 
+_SESSION_SUMMARY_DDL = """
+CREATE TABLE IF NOT EXISTS india_session_summary (
+    date             TEXT PRIMARY KEY,
+    signal_count     INTEGER NOT NULL,
+    a_plus_count     INTEGER NOT NULL,
+    b_count          INTEGER NOT NULL,
+    avg_confidence   REAL NOT NULL,
+    total_suppressed INTEGER NOT NULL,
+    gates_fired      TEXT NOT NULL,
+    tp1_count        INTEGER NOT NULL,
+    sl_count         INTEGER NOT NULL,
+    expired_count    INTEGER NOT NULL,
+    total_points     REAL NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+)
+"""
+
 
 async def init_tables() -> None:
     db = await get_db()
     await db.execute(_SIGNALS_DDL)
     await db.execute(_SUPPRESSIONS_DDL)
     await db.execute(_OUTCOMES_DDL)
+    await db.execute(_SESSION_SUMMARY_DDL)
     await db.commit()
 
 
@@ -244,6 +262,117 @@ async def get_outcomes(date: str | None = None, limit: int = 100) -> list[dict]:
         ORDER BY o.created_at DESC LIMIT ?
         """,
         params,
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def write_session_summary() -> dict:
+    """Aggregate today's signals/suppressions/outcomes into one row.
+
+    Called at the session-close transition (idempotent per date — a
+    restart after close simply rewrites the same aggregates).
+    """
+    import json as _json
+
+    db = await get_db()
+
+    cursor = await db.execute(
+        """
+        SELECT COUNT(*),
+               COALESCE(SUM(CASE WHEN tier = 'A+' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN tier = 'B' THEN 1 ELSE 0 END), 0),
+               COALESCE(AVG(confidence), 0)
+        FROM india_signals WHERE DATE(created_at) = DATE('now', 'localtime')
+        """
+    )
+    sig_row = await cursor.fetchone()
+    assert sig_row is not None  # aggregate query always yields one row
+    signal_count, a_plus, b_count, avg_conf = (
+        int(sig_row[0]),
+        int(sig_row[1]),
+        int(sig_row[2]),
+        float(sig_row[3]),
+    )
+
+    cursor = await db.execute(
+        """
+        SELECT gate_name, COUNT(*) FROM india_suppressions
+        WHERE DATE(created_at) = DATE('now', 'localtime')
+        GROUP BY gate_name
+        """
+    )
+    gates = {str(r[0]): int(r[1]) for r in await cursor.fetchall()}
+
+    cursor = await db.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN outcome = 'TP1_HIT' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN outcome = 'SL_HIT' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN outcome = 'EXPIRED' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(points), 0)
+        FROM india_signal_outcomes
+        WHERE DATE(created_at) = DATE('now', 'localtime')
+        """
+    )
+    oc_row = await cursor.fetchone()
+    assert oc_row is not None  # aggregate query always yields one row
+
+    summary = {
+        "date": None,  # filled by SQL below
+        "signal_count": signal_count,
+        "a_plus_count": a_plus,
+        "b_count": b_count,
+        "avg_confidence": round(avg_conf, 1),
+        "total_suppressed": sum(gates.values()),
+        "gates_fired": _json.dumps(gates),
+        "tp1_count": int(oc_row[0]),
+        "sl_count": int(oc_row[1]),
+        "expired_count": int(oc_row[2]),
+        "total_points": round(float(oc_row[3]), 2),
+    }
+
+    await db.execute(
+        """
+        INSERT INTO india_session_summary
+            (date, signal_count, a_plus_count, b_count, avg_confidence,
+             total_suppressed, gates_fired, tp1_count, sl_count,
+             expired_count, total_points)
+        VALUES (DATE('now', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(date) DO UPDATE SET
+            signal_count = excluded.signal_count,
+            a_plus_count = excluded.a_plus_count,
+            b_count = excluded.b_count,
+            avg_confidence = excluded.avg_confidence,
+            total_suppressed = excluded.total_suppressed,
+            gates_fired = excluded.gates_fired,
+            tp1_count = excluded.tp1_count,
+            sl_count = excluded.sl_count,
+            expired_count = excluded.expired_count,
+            total_points = excluded.total_points
+        """,
+        (
+            summary["signal_count"],
+            summary["a_plus_count"],
+            summary["b_count"],
+            summary["avg_confidence"],
+            summary["total_suppressed"],
+            summary["gates_fired"],
+            summary["tp1_count"],
+            summary["sl_count"],
+            summary["expired_count"],
+            summary["total_points"],
+        ),
+    )
+    await db.commit()
+    return summary
+
+
+async def get_session_summaries(limit: int = 30) -> list[dict]:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM india_session_summary ORDER BY date DESC LIMIT ?",
+        (limit,),
     )
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]

@@ -181,6 +181,13 @@ def build_app() -> FastAPI:
     ) -> list[dict]:
         return await signal_store.get_suppressions(limit=limit)
 
+    @app.get("/api/session-summary", dependencies=[Depends(_check_token)])
+    async def session_summary(
+        limit: int = Query(30, ge=1, le=90),
+    ) -> list[dict]:
+        """Daily session summaries — the 30-day quality-window ledger."""
+        return await signal_store.get_session_summaries(limit=limit)
+
     @app.get("/api/outcomes", dependencies=[Depends(_check_token)])
     async def outcomes(
         date: str | None = Query(None, description="Filter by date (YYYY-MM-DD)"),
