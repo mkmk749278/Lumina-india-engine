@@ -38,7 +38,12 @@ from src.scanner import SCAN_INTERVAL_SEC, IndiaScanner
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
 from src.signal_router import IndiaSignalRouter
-from src.signal_store import init_tables
+from src.signal_store import (
+    get_unresolved_signals_today,
+    init_tables,
+    insert_outcome,
+)
+from src.trade_monitor import IndiaTradeMonitor
 from src.utils import get_logger
 
 logger = get_logger("main")
@@ -59,6 +64,10 @@ async def _run() -> None:
     ctx_builder = IndiaContextBuilder(tick, oi, mkt, expiry)
     scanner = IndiaScanner(ctx_builder, session, expiry)
     router = IndiaSignalRouter()
+    monitor = IndiaTradeMonitor(tick)
+    monitor.resume(
+        await get_unresolved_signals_today(), datetime.now(config.IST)
+    )
 
     feed_kind = os.environ.get("DATA_FEED", "fyers").strip().lower()
     feed_active = [False]
@@ -166,6 +175,15 @@ async def _run() -> None:
                 ):
                     scanner.reset_day()
                     persisted_suppressions = 0
+                if state == SessionState.CLOSED and prev_state is not None:
+                    for oc in monitor.force_close_all(now):
+                        await insert_outcome(
+                            oc.signal_id,
+                            oc.outcome,
+                            oc.exit_price,
+                            oc.points,
+                            oc.resolved_at,
+                        )
                 prev_state = state
 
             if state == SessionState.OPEN or config.INDIA_DEV_MODE:
@@ -178,6 +196,16 @@ async def _run() -> None:
                 if signals or new_suppressions:
                     await router.route(signals, new_suppressions)
                     persisted_suppressions = len(all_suppressions)
+
+                monitor.register(signals, now)
+                for oc in monitor.check(now):
+                    await insert_outcome(
+                        oc.signal_id,
+                        oc.outcome,
+                        oc.exit_price,
+                        oc.points,
+                        oc.resolved_at,
+                    )
 
                 for s in signals:
                     logger.info(
