@@ -26,13 +26,19 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
 import config
-from src import signal_store
+from src import fcm_dispatcher, signal_store
 from src.broker import token_store
 from src.utils import get_logger
 
 logger = get_logger("api")
+
+
+class _FcmTokenBody(BaseModel):
+    token: str
+    uid: str = ""
 
 _STATIC_TOKEN = os.environ.get("API_STATIC_TOKEN", "")
 _FYERS_API_BASE = "https://api-t1.fyers.in/api/v3"
@@ -129,7 +135,7 @@ def build_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_methods=["GET", "OPTIONS"],
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -195,6 +201,14 @@ def build_app() -> FastAPI:
     ) -> list[dict]:
         """Signal outcomes (TP1_HIT / SL_HIT / EXPIRED) joined onto signals."""
         return await signal_store.get_outcomes(date=date, limit=limit)
+
+    @app.post("/api/fcm-token", dependencies=[Depends(_check_token)])
+    async def register_fcm_token(body: _FcmTokenBody) -> dict:
+        """Register or refresh an FCM device token for push notifications."""
+        if not body.token or len(body.token) < 20:
+            raise HTTPException(status_code=400, detail="Invalid FCM token")
+        await fcm_dispatcher.register_token(body.token, body.uid)
+        return {"status": "ok"}
 
     @app.get("/fyers/callback", response_class=HTMLResponse)
     async def fyers_callback(request: Request) -> HTMLResponse:
