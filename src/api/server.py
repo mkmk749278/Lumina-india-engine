@@ -4,22 +4,30 @@ Serves signal data to the lumin-india-app and the ops dashboard.
 Runs inside the engine process (single-process mode) on a background
 thread so the scan loop and HTTP server share one container.
 
+Auth: dual-mode. Static Bearer token (ops dashboard, owner testing) or
+Firebase ID token (app subscribers via Phone Auth). Both accepted on all
+protected endpoints. Firebase ID tokens are verified server-side via
+firebase-admin SDK.
+
 Endpoints:
   GET /api/health           — liveness probe (no auth)
   GET /api/pulse            — engine state snapshot
   GET /api/signals          — paginated signal list with filters
   GET /api/signals/{id}     — single signal detail
   GET /api/suppressed       — recent gate suppressions
+  POST /api/fcm-token       — register FCM device token
   GET /fyers/callback       — Fyers OAuth redirect target (daily login)
 """
 
 from __future__ import annotations
 
 import hashlib
+import json as _json
 import os
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -41,6 +49,8 @@ class _FcmTokenBody(BaseModel):
     uid: str = ""
 
 _STATIC_TOKEN = os.environ.get("API_STATIC_TOKEN", "")
+_firebase_auth_module: Any = None
+_firebase_auth_ready = False
 _FYERS_API_BASE = "https://api-t1.fyers.in/api/v3"
 
 _boot_time: float = 0.0
@@ -112,15 +122,63 @@ display:flex;align-items:center;justify-content:center;height:95vh;margin:0">
 </div></body></html>"""
 
 
+def _ensure_firebase_auth() -> bool:
+    """Lazily load firebase_admin.auth for ID token verification."""
+    global _firebase_auth_module, _firebase_auth_ready
+    if _firebase_auth_ready:
+        return _firebase_auth_module is not None
+    _firebase_auth_ready = True
+
+    if not os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", ""):
+        return False
+
+    try:
+        import firebase_admin
+        try:
+            firebase_admin.get_app()
+        except ValueError:
+            from firebase_admin import credentials
+            cred = credentials.Certificate(
+                _json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT_JSON"])
+            )
+            firebase_admin.initialize_app(cred)
+        from firebase_admin import auth as fb_auth
+        _firebase_auth_module = fb_auth
+        return True
+    except Exception:
+        logger.opt(exception=True).warning("Firebase auth verification unavailable")
+        return False
+
+
+def _verify_firebase_id_token(token: str) -> str | None:
+    """Verify a Firebase ID token. Returns the UID on success, None on failure."""
+    if not _ensure_firebase_auth():
+        return None
+    try:
+        decoded = _firebase_auth_module.verify_id_token(token)
+        return decoded.get("uid")
+    except Exception:
+        return None
+
+
 def _check_token(request: Request) -> None:
-    if not _STATIC_TOKEN:
-        return
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
+        if not _STATIC_TOKEN and not _ensure_firebase_auth():
+            return
         raise HTTPException(status_code=401, detail="Missing Bearer token")
     token = auth[len("Bearer "):]
-    if token != _STATIC_TOKEN:
-        raise HTTPException(status_code=403, detail="Invalid token")
+
+    if _STATIC_TOKEN and token == _STATIC_TOKEN:
+        request.state.firebase_uid = None
+        return
+
+    uid = _verify_firebase_id_token(token)
+    if uid is not None:
+        request.state.firebase_uid = uid
+        return
+
+    raise HTTPException(status_code=403, detail="Invalid token")
 
 
 def build_app() -> FastAPI:
@@ -202,12 +260,17 @@ def build_app() -> FastAPI:
         """Signal outcomes (TP1_HIT / SL_HIT / EXPIRED) joined onto signals."""
         return await signal_store.get_outcomes(date=date, limit=limit)
 
-    @app.post("/api/fcm-token", dependencies=[Depends(_check_token)])
-    async def register_fcm_token(body: _FcmTokenBody) -> dict:
+    @app.post("/api/fcm-token")
+    async def register_fcm_token(
+        request: Request,
+        body: _FcmTokenBody,
+        _: None = Depends(_check_token),
+    ) -> dict:
         """Register or refresh an FCM device token for push notifications."""
         if not body.token or len(body.token) < 20:
             raise HTTPException(status_code=400, detail="Invalid FCM token")
-        await fcm_dispatcher.register_token(body.token, body.uid)
+        uid = getattr(request.state, "firebase_uid", None) or body.uid
+        await fcm_dispatcher.register_token(body.token, uid)
         return {"status": "ok"}
 
     @app.get("/fyers/callback", response_class=HTMLResponse)

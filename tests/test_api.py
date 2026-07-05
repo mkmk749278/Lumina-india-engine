@@ -88,6 +88,9 @@ async def test_pulse_no_auth(app):
 
     original = src.api.server._STATIC_TOKEN
     src.api.server._STATIC_TOKEN = "secret123"
+    orig_ready = src.api.server._firebase_auth_ready
+    src.api.server._firebase_auth_ready = True
+    src.api.server._firebase_auth_module = None
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
@@ -95,6 +98,137 @@ async def test_pulse_no_auth(app):
             assert resp.status_code == 401
     finally:
         src.api.server._STATIC_TOKEN = original
+        src.api.server._firebase_auth_ready = orig_ready
+
+
+async def test_static_token_accepted(app):
+    import src.api.server
+
+    original = src.api.server._STATIC_TOKEN
+    src.api.server._STATIC_TOKEN = "owner-token-xyz"
+    orig_ready = src.api.server._firebase_auth_ready
+    src.api.server._firebase_auth_ready = True
+    src.api.server._firebase_auth_module = None
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get(
+                "/api/pulse",
+                headers={"Authorization": "Bearer owner-token-xyz"},
+            )
+            assert resp.status_code == 200
+    finally:
+        src.api.server._STATIC_TOKEN = original
+        src.api.server._firebase_auth_ready = orig_ready
+
+
+async def test_invalid_token_rejected(app):
+    import src.api.server
+
+    original = src.api.server._STATIC_TOKEN
+    src.api.server._STATIC_TOKEN = "correct-token"
+    orig_ready = src.api.server._firebase_auth_ready
+    src.api.server._firebase_auth_ready = True
+    src.api.server._firebase_auth_module = None
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get(
+                "/api/pulse",
+                headers={"Authorization": "Bearer wrong-token"},
+            )
+            assert resp.status_code == 403
+    finally:
+        src.api.server._STATIC_TOKEN = original
+        src.api.server._firebase_auth_ready = orig_ready
+
+
+async def test_firebase_token_accepted(app):
+    """Simulate a valid Firebase ID token via mocked verify_id_token."""
+    from unittest.mock import MagicMock
+
+    import src.api.server
+
+    original = src.api.server._STATIC_TOKEN
+    src.api.server._STATIC_TOKEN = ""
+    mock_auth = MagicMock()
+    mock_auth.verify_id_token.return_value = {"uid": "firebase-user-123"}
+    orig_module = src.api.server._firebase_auth_module
+    orig_ready = src.api.server._firebase_auth_ready
+    src.api.server._firebase_auth_module = mock_auth
+    src.api.server._firebase_auth_ready = True
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get(
+                "/api/pulse",
+                headers={"Authorization": "Bearer fake-firebase-id-token"},
+            )
+            assert resp.status_code == 200
+            mock_auth.verify_id_token.assert_called_once_with(
+                "fake-firebase-id-token"
+            )
+    finally:
+        src.api.server._STATIC_TOKEN = original
+        src.api.server._firebase_auth_module = orig_module
+        src.api.server._firebase_auth_ready = orig_ready
+
+
+async def test_firebase_token_rejected(app):
+    """Invalid Firebase token falls through to 403."""
+    from unittest.mock import MagicMock
+
+    import src.api.server
+
+    original = src.api.server._STATIC_TOKEN
+    src.api.server._STATIC_TOKEN = ""
+    mock_auth = MagicMock()
+    mock_auth.verify_id_token.side_effect = Exception("token expired")
+    orig_module = src.api.server._firebase_auth_module
+    orig_ready = src.api.server._firebase_auth_ready
+    src.api.server._firebase_auth_module = mock_auth
+    src.api.server._firebase_auth_ready = True
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get(
+                "/api/pulse",
+                headers={"Authorization": "Bearer expired-token"},
+            )
+            assert resp.status_code == 403
+    finally:
+        src.api.server._STATIC_TOKEN = original
+        src.api.server._firebase_auth_module = orig_module
+        src.api.server._firebase_auth_ready = orig_ready
+
+
+async def test_fcm_token_uses_firebase_uid(app):
+    """FCM token registration should use authenticated UID from Firebase."""
+    from unittest.mock import MagicMock
+
+    import src.api.server
+
+    original = src.api.server._STATIC_TOKEN
+    src.api.server._STATIC_TOKEN = ""
+    mock_auth = MagicMock()
+    mock_auth.verify_id_token.return_value = {"uid": "fb-user-456"}
+    orig_module = src.api.server._firebase_auth_module
+    orig_ready = src.api.server._firebase_auth_ready
+    src.api.server._firebase_auth_module = mock_auth
+    src.api.server._firebase_auth_ready = True
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.post(
+                "/api/fcm-token",
+                json={"token": "a" * 152},
+                headers={"Authorization": "Bearer valid-fb-token"},
+            )
+            assert resp.status_code == 200
+    finally:
+        src.api.server._STATIC_TOKEN = original
+        src.api.server._firebase_auth_module = orig_module
+        src.api.server._firebase_auth_ready = orig_ready
 
 
 async def test_signals_empty(client):
