@@ -56,6 +56,10 @@ _API_PORT: int = int(os.environ.get("API_PORT", "8000"))
 async def _run() -> None:
     await init_tables()
 
+    from src.fcm_dispatcher import init_fcm_tables
+
+    await init_fcm_tables()
+
     tick = IndiaTickStore()
     oi = IndiaOIStore()
     mkt = IndiaMarketData()

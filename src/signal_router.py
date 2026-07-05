@@ -1,9 +1,9 @@
-"""Signal routing — scanner output to SQLite store (and future FCM push).
+"""Signal routing — scanner output to SQLite store + FCM push.
 
 The router is the single fan-out point after the scanner emits a signal.
-Phase 1 routes are:
+Phase 1 routes:
   1. SQLite write (``india_signals`` table) — consumed by API server
-  2. (Future) FCM push notification — consumed by lumin-india-app
+  2. FCM push notification — consumed by lumin-india-app
 
 The scanner calls ``router.route(signals, suppressions)`` at the end of
 each scan cycle.  The router persists both emitted signals and gate
@@ -12,6 +12,7 @@ suppressions for the API's ``/api/suppressed`` endpoint.
 
 from __future__ import annotations
 
+from src import fcm_dispatcher
 from src.scanner import Suppression
 from src.signal_store import insert_signal, insert_suppression
 from src.signals.model import IndiaSignal
@@ -42,6 +43,14 @@ class IndiaSignalRouter:
             except Exception:
                 logger.opt(exception=True).error(
                     "failed to store signal {}", sig.signal_id
+                )
+                continue
+
+            try:
+                await fcm_dispatcher.dispatch(sig)
+            except Exception:
+                logger.opt(exception=True).warning(
+                    "FCM dispatch failed for {}", sig.signal_id
                 )
 
         for sup in suppressions:

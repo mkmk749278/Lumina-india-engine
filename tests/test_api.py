@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api.server import build_app, set_engine_refs
 from src.db import close_db
+from src.fcm_dispatcher import init_fcm_tables
 from src.signal_store import init_tables, insert_signal
 from src.signals.model import IndiaSignal
 
@@ -21,6 +22,7 @@ async def _setup_db(tmp_path, monkeypatch):
     src.db._DB_DIR = tmp_path
     src.db._DB_PATH = tmp_path / "india_db.sqlite3"
     await init_tables()
+    await init_fcm_tables()
     yield
     await close_db()
 
@@ -136,3 +138,20 @@ async def test_suppressed_empty(client):
     resp = await client.get("/api/suppressed")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+async def test_fcm_token_register(client):
+    resp = await client.post(
+        "/api/fcm-token",
+        json={"token": "a" * 152, "uid": "user123"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ok"
+
+
+async def test_fcm_token_invalid(client):
+    resp = await client.post(
+        "/api/fcm-token",
+        json={"token": "short"},
+    )
+    assert resp.status_code == 400
