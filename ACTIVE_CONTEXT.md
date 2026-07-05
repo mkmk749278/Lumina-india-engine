@@ -1,6 +1,6 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-05 (Session 7)
+**Last updated:** 2026-07-05 (Session 8)
 
 ---
 
@@ -33,7 +33,7 @@ Phase 2 (auto-execution) is locked until SEBI RA registration + NSE empanelment 
 | Repo | Purpose | Branch convention | Status |
 |---|---|---|---|
 | `mkmk749278/Lumina-india-engine` | NSE F&O scanner, evaluators, API server, execution (Phase 2) | `feat/`, `fix/`, `docs/`, `chore/` | ACTIVE — 27 PRs merged, live on real NSE data |
-| `mkmk749278/lumin-india-app` | Flutter Android app (standalone Play Store listing) | same | ACTIVE — PR #7: Firebase + FCM wired (open). Foundation PRs #2–#3 merged. Owner device test pending. |
+| `mkmk749278/lumin-india-app` | Flutter Android app (standalone Play Store listing) | same | ACTIVE — PRs #2–#8 merged. Phone Auth complete. Owner device test pending. |
 | `mkmk749278/lumin-india-ops` | Ops dashboard (owner-only diagnostic) | same | ACTIVE — all 5 views implemented (Pulse, Signals, Suppressed, Outcomes, Quality). Auth working. |
 
 ---
@@ -68,6 +68,7 @@ Phase 2 (auto-execution) is locked until SEBI RA registration + NSE empanelment 
 | #26 | Angel One SmartAPI feed (`DATA_FEED=angel`) — zero-touch daily TOTP auth, OI on every tick |
 | #27 | Prev-day levels bug: `set_prev_day` was never called — evaluators keyed on PDH/PDL were blind. 96h fetch + date bucketing |
 | #33 | FCM push dispatcher: Firebase Admin SDK init, `india_fcm_tokens` table, `POST /api/fcm-token` endpoint, signal_router fan-out, deploy secret injection. 20 new tests. |
+| #34 | Dual-auth on all protected endpoints: Firebase ID tokens (app subscribers via Phone Auth) accepted alongside static Bearer (ops/owner). Server-side verification via `firebase-admin`. Authenticated UID attached to request state. 258 tests. |
 
 ### Signal delivery path (wired end-to-end as of PR #16)
 
@@ -93,11 +94,11 @@ signal emit. Notification body: symbol + direction + tier — never price target
 | `GET /api/session-summary` | Bearer | 30-day quality ledger |
 | `POST /api/fcm-token` | Bearer | register FCM device token |
 
-Auth: static Bearer token (`API_STATIC_TOKEN` GitHub secret → env). Firebase auth for app users comes with the app build.
+Auth: dual-mode. Static Bearer token (`API_STATIC_TOKEN`) for ops/owner. Firebase ID token (Phone Auth) for app subscribers — verified server-side via `firebase-admin`.
 
 ### Test suite
 
-**253 tests**, all passing. `ruff` + `mypy` clean.
+**258 tests**, all passing. `ruff` + `mypy` clean.
 
 ---
 
@@ -164,14 +165,11 @@ Fyers OAuth access tokens are valid for one trading day. Until the signing-servi
 
 ## Open Queue (in priority order)
 
-1. **CTE: merge PR #33 (engine FCM)** — CI fix pushed, awaiting green. Auto-merge once green (off-money-path).
-2. **CTE: merge PR #7 (app Firebase + FCM)** — CI green. Auto-merge (off-money-path).
+1. **Owner: app device test** — PR #8 merged. Build testing APK, install, test: open app → enter +91 mobile → receive OTP → verify → see signal feed → tap signal → settings shows phone number → sign out. Mandatory before Play Store listing.
 3. **Owner/CTE: Cloudflare Full (strict)** — generate Origin CA cert (SSL/TLS → Origin Server), install on nginx :443, flip mode from Flexible. Before real subscribers.
-4. **Owner: app device test** — run "Build testing APK" workflow (now includes Firebase), install, verify FCM permission prompt + signal feed. Mandatory before further signal-screen work.
-5. **CTE: app auth screens** — Firebase Phone OTP login. Owner sign-off item (auth flow change).
-6. **Owner: SL-floor decision** — affects ~5 evaluators (see Known Issues). Needs ~5 trading days of data.
-7. **CTE: Razorpay integration** — in-app billing, server-side verification. Blocked on owner Razorpay account.
-8. **Owner: Phase 1 go-live review** — watch scanner on real NSE data, approve signal delivery quality window start.
+4. **Owner: SL-floor decision** — affects ~5 evaluators (see Known Issues). Needs ~5 trading days of data.
+5. **CTE: Razorpay integration** — in-app billing, server-side verification. Blocked on owner Razorpay account.
+6. **Owner: Phase 1 go-live review** — watch scanner on real NSE data, approve signal delivery quality window start.
 
 ---
 
@@ -197,3 +195,4 @@ Fyers OAuth access tokens are valid for one trading day. Until the signing-servi
 | 6 | 2026-07-03 | Domain live (Cloudflare Flexible after 521 diagnosis). Fyers token flow debugged end-to-end: redirect-URI mismatch → Cloudflare UA block (#21) → data endpoints under /data/, futures symbol -FF removed, fyers-apiv3 dep (#22). **ENGINE LIVE ON REAL NSE DATA 12:59 IST** — 45 candles seeded/base, WebSocket ticks, scanner OPEN, verified via /api/pulse over HTTPS. Fyers app recreated: QHX93US4FU-100. |
 | 6b | 2026-07-03 (eve) | Broker research: SEBI Feb-2025 circular forces daily token expiry on ALL brokers. One-tap /fyers/callback (#25) replaces Termux ritual after Fyers disabled refresh API (#24). Angel One zero-touch feed shipped default-off (#26). Day-1 review: engine stable 163 scans, 0 signals + 0 suppressions exposed unwired prev-day levels — fixed (#27). Monday is first full-context session. |
 | 7 | 2026-07-05 | Firebase project created (`lumin-india-d887d`). **Engine FCM dispatcher** (PR #33): Firebase Admin SDK push on signal emit, `POST /api/fcm-token`, token storage + auto-cleanup, deploy secret injection. 253 tests. **App Firebase + FCM** (PR #7): `firebase_core` + `firebase_messaging`, `FcmService`, `registerFcmToken()`, `build-apk.yml` patched for google-services. **Ops dashboard** explored — all 5 views already built (Pulse, Signals, Suppressed, Outcomes, Quality), 5 tests, auth working. Signal delivery pipeline end-to-end complete. |
+| 8 | 2026-07-05 | **Phone Auth complete.** Engine PR #34 (dual-auth: Firebase ID token + static Bearer, 258 tests, merged). App PR #8 (Phone Auth screens: phone input +91, OTP verify 60s resend, auth gate, dynamic token interceptor, deferred FCM init with UID, Riverpod auth providers for test isolation, merged). Full subscriber login flow wired end-to-end. Owner device test is next. |
