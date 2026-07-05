@@ -156,7 +156,8 @@ def _verify_firebase_id_token(token: str) -> str | None:
         return None
     try:
         decoded = _firebase_auth_module.verify_id_token(token)
-        return decoded.get("uid")
+        uid = decoded.get("uid")
+        return str(uid) if uid is not None else None
     except Exception:
         return None
 
