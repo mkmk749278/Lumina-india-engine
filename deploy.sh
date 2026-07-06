@@ -42,6 +42,11 @@ if [ ! -f .env ]; then
     echo "Created .env from .env.example"
 fi
 
+# Ensure firebase-sa.json exists (Docker Compose bind mount fails otherwise)
+if [ ! -f firebase-sa.json ]; then
+    echo '{}' > firebase-sa.json
+fi
+
 # ── Build ───────────────────────────────────────────────────────────────
 BUILD_ARGS=()
 if [ "$DO_CLEAN" = true ]; then

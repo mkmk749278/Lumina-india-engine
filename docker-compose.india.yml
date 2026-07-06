@@ -36,6 +36,7 @@ services:
       - "127.0.0.1:${API_PORT:-8000}:${API_PORT:-8000}"
     volumes:
       - india-data:/app/data
+      - ./firebase-sa.json:/app/firebase-sa.json:ro
     environment:
       - REDIS_URL=redis://redis:6379/0
     mem_limit: 1g
