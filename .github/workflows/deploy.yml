@@ -125,10 +125,11 @@ jobs:
             # KEY=value lines, comments, and blanks — drop everything else.
             grep -E '^(#|$|[A-Za-z_][A-Za-z0-9_]*=)' .env > .env.clean \
               && mv .env.clean .env || true
+            sed -i '/^FIREBASE_SERVICE_ACCOUNT_JSON=/d' .env
             FIREBASE_SA='${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}'
             if [ -n "$FIREBASE_SA" ]; then
               printf '%s' "$FIREBASE_SA" > firebase-sa.json
-              chmod 600 firebase-sa.json
+              chmod 644 firebase-sa.json
             fi
 
             chmod 600 .env
