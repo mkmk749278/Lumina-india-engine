@@ -120,7 +120,11 @@ jobs:
             # instead of .env (embedded quotes break Docker Compose's
             # .env parser).  The engine reads /app/firebase-sa.json first,
             # falling back to the env var for backwards compat.
-            sed -i '/^FIREBASE_SERVICE_ACCOUNT_JSON=/d' .env
+            #
+            # Scrub the old multi-line JSON residue: keep only valid
+            # KEY=value lines, comments, and blanks — drop everything else.
+            grep -E '^(#|$|[A-Za-z_][A-Za-z0-9_]*=)' .env > .env.clean \
+              && mv .env.clean .env || true
             FIREBASE_SA='${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}'
             if [ -n "$FIREBASE_SA" ]; then
               printf '%s' "$FIREBASE_SA" > firebase-sa.json
