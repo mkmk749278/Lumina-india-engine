@@ -28,8 +28,24 @@ _messaging: Any = None
 _initialized = False
 
 
+def _load_firebase_sa() -> dict | None:
+    """Load Firebase service account from file or env var.
+
+    Prefers the JSON file (avoids .env quoting issues with embedded JSON).
+    Falls back to the env var for backwards compatibility.
+    """
+    sa_file = os.environ.get("FIREBASE_SERVICE_ACCOUNT_FILE", "/app/firebase-sa.json")
+    if os.path.isfile(sa_file):
+        with open(sa_file) as f:
+            return dict(json.load(f))
+    raw = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+    if raw:
+        return dict(json.loads(raw))
+    return None
+
+
 def _init_firebase() -> bool:
-    """Lazily initialize the Firebase Admin SDK from env credentials.
+    """Lazily initialize the Firebase Admin SDK for FCM.
 
     Returns True if initialization succeeded, False otherwise.
     The SDK is initialized at most once per process.
@@ -39,16 +55,27 @@ def _init_firebase() -> bool:
         return _fcm_app is not None
 
     _initialized = True
-    creds_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
-    if not creds_json:
-        logger.warning("FIREBASE_SERVICE_ACCOUNT_JSON not set — FCM disabled")
-        return False
 
     try:
         import firebase_admin
-        from firebase_admin import credentials, messaging
+        from firebase_admin import messaging
 
-        cred = credentials.Certificate(json.loads(creds_json))
+        try:
+            _fcm_app = firebase_admin.get_app()
+            _messaging = messaging
+            logger.info("Firebase Admin SDK reused for FCM")
+            return True
+        except ValueError:
+            pass
+
+        sa_data = _load_firebase_sa()
+        if sa_data is None:
+            logger.warning("No Firebase credentials found — FCM disabled")
+            return False
+
+        from firebase_admin import credentials
+
+        cred = credentials.Certificate(sa_data)
         _fcm_app = firebase_admin.initialize_app(cred)
         _messaging = messaging
         logger.info("Firebase Admin SDK initialized for FCM")
