@@ -116,13 +116,15 @@ jobs:
             _inject ANGEL_PIN "${{ secrets.ANGEL_PIN }}"
             _inject ANGEL_TOTP_SECRET "${{ secrets.ANGEL_TOTP_SECRET }}"
 
-            # Firebase service account JSON (multi-line value).
-            # Write it verbatim — the engine parses JSON from the env var.
+            # Firebase service account — write to a dedicated JSON file
+            # instead of .env (embedded quotes break Docker Compose's
+            # .env parser).  The engine reads /app/firebase-sa.json first,
+            # falling back to the env var for backwards compat.
+            sed -i '/^FIREBASE_SERVICE_ACCOUNT_JSON=/d' .env
             FIREBASE_SA='${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}'
             if [ -n "$FIREBASE_SA" ]; then
-              # Remove any existing entry then append as a single line.
-              sed -i '/^FIREBASE_SERVICE_ACCOUNT_JSON=/d' .env
-              printf 'FIREBASE_SERVICE_ACCOUNT_JSON=%s\n' "$FIREBASE_SA" >> .env
+              printf '%s' "$FIREBASE_SA" > firebase-sa.json
+              chmod 600 firebase-sa.json
             fi
 
             chmod 600 .env

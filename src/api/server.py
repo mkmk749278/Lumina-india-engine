@@ -122,6 +122,22 @@ display:flex;align-items:center;justify-content:center;height:95vh;margin:0">
 </div></body></html>"""
 
 
+def _load_firebase_sa() -> dict | None:
+    """Load Firebase service account credentials from file or env var.
+
+    Prefers a JSON file (avoids .env quoting issues with embedded JSON).
+    Falls back to the env var for backwards compatibility.
+    """
+    sa_file = os.environ.get("FIREBASE_SERVICE_ACCOUNT_FILE", "/app/firebase-sa.json")
+    if os.path.isfile(sa_file):
+        with open(sa_file) as f:
+            return _json.load(f)
+    raw = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+    if raw:
+        return _json.loads(raw)
+    return None
+
+
 def _ensure_firebase_auth() -> bool:
     """Lazily load firebase_admin.auth for ID token verification."""
     global _firebase_auth_module, _firebase_auth_ready
@@ -129,7 +145,8 @@ def _ensure_firebase_auth() -> bool:
         return _firebase_auth_module is not None
     _firebase_auth_ready = True
 
-    if not os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", ""):
+    sa_data = _load_firebase_sa()
+    if sa_data is None:
         return False
 
     try:
@@ -138,9 +155,7 @@ def _ensure_firebase_auth() -> bool:
             firebase_admin.get_app()
         except ValueError:
             from firebase_admin import credentials
-            cred = credentials.Certificate(
-                _json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT_JSON"])
-            )
+            cred = credentials.Certificate(sa_data)
             firebase_admin.initialize_app(cred)
         from firebase_admin import auth as fb_auth
         _firebase_auth_module = fb_auth
