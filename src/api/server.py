@@ -131,12 +131,10 @@ def _load_firebase_sa() -> dict | None:
     sa_file = os.environ.get("FIREBASE_SERVICE_ACCOUNT_FILE", "/app/firebase-sa.json")
     if os.path.isfile(sa_file):
         with open(sa_file) as f:
-            data: dict = _json.load(f)  # type: ignore[assignment]
-            return data
+            return dict(_json.load(f))
     raw = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
     if raw:
-        parsed: dict = _json.loads(raw)  # type: ignore[assignment]
-        return parsed
+        return dict(_json.loads(raw))
     return None
 
 
