@@ -81,6 +81,33 @@ async def test_pulse_with_auth(client):
     assert data["status"] == "running"
     assert data["scan_count"] == 42
     assert data["session_state"] == "CLOSED"
+    # Feed diagnostics present even without a provider wired (null defaults).
+    assert data["feed_connected"] is None
+    assert data["feed_symbols"] == []
+
+
+async def test_pulse_exposes_feed_diagnostics():
+    set_engine_refs(
+        boot_time=1000.0,
+        scan_count_ref=[7],
+        session_state_ref=["OPEN"],
+        status_provider=lambda: {
+            "feed_connected": True,
+            "feed_symbols": ["NSE:NIFTY26JULFUT", "NSE:BANKNIFTY26JULFUT"],
+            "data_age_seconds": 12,
+            "suppressed_today": 3,
+        },
+    )
+    transport = ASGITransport(app=build_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        data = (await c.get("/api/pulse")).json()
+
+    assert data["feed_connected"] is True
+    assert data["feed_symbols"] == ["NSE:NIFTY26JULFUT", "NSE:BANKNIFTY26JULFUT"]
+    assert data["data_age_seconds"] == 12
+    assert data["suppressed_today"] == 3
+    # Reset the module global so later tests see no provider.
+    set_engine_refs(1000.0, [0], ["CLOSED"])
 
 
 async def test_pulse_no_auth(app):

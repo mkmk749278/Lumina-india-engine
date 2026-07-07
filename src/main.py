@@ -144,8 +144,26 @@ async def _run() -> None:
     scan_count_ref = [0]
     session_state_ref = ["UNKNOWN"]
 
+    def _engine_status() -> dict:
+        """Feed/data diagnostics for /api/pulse (see set_engine_refs)."""
+        symbols = feed.symbols if feed_active[0] else {}
+        now_ist = datetime.now(config.IST)
+        ages: list[float] = []
+        for sym in symbols.values():
+            candles = tick.get_candles_5m(sym)
+            if candles:
+                ages.append((now_ist - candles[-1].ts).total_seconds())
+        return {
+            "feed_connected": feed_active[0],
+            "feed_symbols": list(symbols.values()),
+            "data_age_seconds": int(min(ages)) if ages else None,
+            "suppressed_today": len(scanner.gates.suppressions),
+        }
+
     app = build_app()
-    set_engine_refs(boot_time, scan_count_ref, session_state_ref)
+    set_engine_refs(
+        boot_time, scan_count_ref, session_state_ref, _engine_status
+    )
     api_task = asyncio.create_task(serve_api(app, _API_PORT))
 
     logger.info(

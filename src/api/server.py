@@ -56,6 +56,7 @@ _FYERS_API_BASE = "https://api-t1.fyers.in/api/v3"
 _boot_time: float = 0.0
 _scan_count_ref: list[int] | None = None
 _session_state_ref: list[str] | None = None
+_status_provider: Callable[[], dict] | None = None
 _token_refresh_cb: Callable[[str], Awaitable[None]] | None = None
 
 
@@ -225,6 +226,22 @@ def build_app() -> FastAPI:
         session_state = _session_state_ref[0] if _session_state_ref else "UNKNOWN"
         signals_today = await signal_store.get_signal_count_today()
 
+        # Feed/data diagnostics — the first question when "nothing fired" is
+        # whether the scanner has any live data at all. Without this a silent
+        # feed (e.g. the daily Fyers token was never tapped) is indistinguishable
+        # from a quiet market: both show scan_count climbing and 0 signals.
+        feed_diag: dict = {
+            "feed_connected": None,
+            "feed_symbols": [],
+            "data_age_seconds": None,
+            "suppressed_today": None,
+        }
+        if _status_provider is not None:
+            try:
+                feed_diag.update(_status_provider())
+            except Exception:  # never let diagnostics break the pulse endpoint
+                logger.opt(exception=True).warning("status provider failed")
+
         return {
             "status": "running",
             "uptime_seconds": int(uptime),
@@ -234,6 +251,7 @@ def build_app() -> FastAPI:
             "dev_mode": config.INDIA_DEV_MODE,
             "auto_execution": config.AUTO_EXECUTION_ENABLED,
             "allowed_bases": list(config.ALLOWED_BASES),
+            **feed_diag,
             "ts": datetime.now(config.IST).isoformat(),
         }
 
@@ -358,12 +376,19 @@ def set_engine_refs(
     boot_time: float,
     scan_count_ref: list[int],
     session_state_ref: list[str],
+    status_provider: Callable[[], dict] | None = None,
 ) -> None:
-    """Wire live engine state into the API for the /pulse endpoint."""
-    global _boot_time, _scan_count_ref, _session_state_ref
+    """Wire live engine state into the API for the /pulse endpoint.
+
+    ``status_provider`` returns feed/data diagnostics (connected, symbols,
+    data age, suppressed-today) so /pulse can distinguish a dead feed from a
+    quiet market. Optional so tests can wire refs without a live feed.
+    """
+    global _boot_time, _scan_count_ref, _session_state_ref, _status_provider
     _boot_time = boot_time
     _scan_count_ref = scan_count_ref
     _session_state_ref = session_state_ref
+    _status_provider = status_provider
 
 
 async def serve_api(app: FastAPI, port: int = 8000) -> None:
