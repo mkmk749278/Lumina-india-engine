@@ -27,7 +27,11 @@ from datetime import time as dt_time
 from typing import Any
 
 import config
-from src.broker.history_utils import aggregate_candles, prev_session_levels
+from src.broker.history_utils import (
+    CumulativeVolume,
+    aggregate_candles,
+    prev_session_levels,
+)
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
@@ -77,6 +81,7 @@ class AngelDataFeed:
         self._oi = oi_store
         self._mkt = market_data
         self._expiry = expiry_mgr
+        self._cum_vol = CumulativeVolume()
 
         self._smart: Any = None
         self._ws: Any = None
@@ -298,19 +303,35 @@ class AngelDataFeed:
                         *levels,
                     )
 
-                recent = [c for c in candles if c.ts >= ring_cutoff] or candles
-                candles_15m = aggregate_candles(candles, 15)
-                candles_60m = aggregate_candles(candles, 60)
+                cur_bucket = now.replace(
+                    minute=(now.minute // 5) * 5, second=0, microsecond=0
+                )
+                completed = [c for c in candles if c.ts < cur_bucket]
+                recent = (
+                    [c for c in completed if c.ts >= ring_cutoff] or completed
+                )
+                candles_15m = aggregate_candles(completed, 15)
+                candles_60m = aggregate_candles(completed, 60)
                 self._tick.seed(tradingsymbol, recent, candles_15m, candles_60m)
+
+                todays = [c for c in candles if c.ts.date() == now.date()]
+                if todays:
+                    self._tick.seed_intraday_state(tradingsymbol, todays, now)
+
                 logger.info(
-                    "seeded {} with {} 5m / {} 15m / {} 60m candles",
+                    "seeded {} with {} 5m / {} 15m / {} 60m candles"
+                    " ({} bars today)",
                     base,
                     len(recent),
                     len(candles_15m),
                     len(candles_60m),
+                    len(todays),
                 )
             except Exception:
                 logger.opt(exception=True).warning("historical seed failed for {}", base)
+
+        # Live volume deltas re-baseline against the fresh seed.
+        self._cum_vol.reset()
 
     # ── WebSocket ───────────────────────────────────────────────────────
 
@@ -390,7 +411,10 @@ class AngelDataFeed:
         if symbol is None:
             return
 
-        volume = float(tick.get("volume_trade_for_the_day", 0) or 0)
+        # volume_trade_for_the_day is cumulative — the store needs the
+        # per-tick increment (see CumulativeVolume).
+        cum_volume = float(tick.get("volume_trade_for_the_day", 0) or 0)
+        volume = self._cum_vol.delta(symbol, cum_volume, ts)
         self._tick.on_tick(symbol, ltp, volume, ts)
 
         oi = float(tick.get("open_interest", 0) or 0)

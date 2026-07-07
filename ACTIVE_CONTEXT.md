@@ -1,6 +1,6 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-07 (Session 8)
+**Last updated:** 2026-07-07 (Session 9 — full-system audit, owner-signed-off fixes)
 
 ---
 
@@ -175,14 +175,13 @@ ticks arrived. Fix: call `connect()` and issue `subscribe()` from the
 `on_connect` callback (correct SDK lifecycle). Verified against the installed
 SDK source + a regression test.
 
-### `min_scalp_points` is a dead scaffold (flag)
+### `min_scalp_points` is a dead scaffold — RESOLVED (Session 9)
 
-`INSTRUMENTS[*].min_scalp_points` (IB11, 15/40) is declared but consumed
-nowhere — the STT minimum is enforced only implicitly by the `MIN_SL_PCT`
-floors. CLAUDE.md bans scaffolds. Next "do it right" step: wire IB11 as an
-explicit central min-scalp gate (on TP1 distance) with suppression telemetry,
-then the per-evaluator floors become pure quality knobs. Deferred from the
-loosen pass to keep that change reversible/config-only.
+Wired as the central `min_scalp_gate` in the pre-score chain: TP1 distance
+must clear `min_scalp_points_for(base, entry)` (index floors 15/40/15/30 pts;
+stock bases price-relative via `INDIA_MIN_SCALP_PCT`, default 0.10%). Full
+suppression telemetry. The per-evaluator `MIN_SL_PCT` floors are now pure
+quality knobs.
 
 ### Signal-firing root causes — FIXED (Session 8, PR pending)
 
@@ -245,6 +244,86 @@ Fyers OAuth access tokens are valid for one trading day. Until the signing-servi
 - If BTC-State thesis confirms on backfill data: bring graded soft-confirmation wiring design for owner sign-off
 - Layer-2 ops for Profit page: BTC-State-conditioned signal filters
 - Scorer calibration: investigate 75–80 band inversion
+
+---
+
+## Session 9 — Full-system audit (2026-07-07, owner signed off all changes)
+
+Owner instruction: deep audit of paths / scoring / entry-exit / data
+sufficiency / caching / seeding / universe, fix everything, owner sign-off
+granted up front. Branch `claude/indian-stock-market-audit-e8lk5m`. 301 tests
+green, ruff + mypy clean. Findings and fixes:
+
+**Critical (signal quality was actively corrupted):**
+1. **Cumulative-volume tick bug** — Fyers `vol_traded_today` / Angel
+   `volume_trade_for_the_day` are cumulative day totals but were summed into
+   the building candle once per tick. Live 5m bar volume was inflated by
+   orders of magnitude → every volume gate (LSR/ORB/VSB/BDS/FAR/QCB/MAC)
+   passed trivially and volume scoring maxed at 15/15 on every live signal
+   since the WS fix. Now per-symbol deltas via `CumulativeVolume`
+   (day-rollover + reset-safe) in both feeds.
+2. **PCR / max-pain never updated** — `fetch_option_chain` was never called,
+   so PCR_EXTREME + EXPIRY_GAMMA_SQUEEZE were permanently inert and the
+   PCR scoring bonus never fired. Also: the underlier symbol was wrong
+   (`NSE:NIFTY-INDEX` → must be `NSE:NIFTY50-INDEX`/`NSE:NIFTYBANK-INDEX`),
+   the parser expected a non-Fyers response shape (now parses the real v3
+   flat `optionsChain` + `callOi`/`putOi` totals), the max-pain formula had
+   the call/put legs swapped, and PCR was last-chain-wins (now aggregated
+   per-base in IndiaOIStore). Chain polling wired into the OI loop every
+   `FYERS_CHAIN_POLL_SEC` (300s) for index bases.
+3. **Mid-session restart blinded the day** — day_open came from the first
+   live tick (wrong price → circuit gate + VIX-extreme drop% wrong) and the
+   opening range was lost for the rest of the day (ORB + FAR dead). Now
+   `seed_intraday_state()` rebuilds day_open / intraday extremes / OR (with
+   09:45 lock) from today's fetched candles at every seed.
+4. **`regime_daily` hardcoded RANGING** — daily-timeframe scoring component
+   could never see a trend. The feed now fetches ~300 calendar days of daily
+   candles per base at seed and classifies a real daily regime
+   (`on_daily_regime` → context builder).
+
+**Universe-expansion correctness (46 bases shipped with index-scaled numbers):**
+5. `min_atr_gate` 3.0 abs points suppressed every cheap stock forever (2.5%
+   of SAIL) — stocks now use `INDIA_MIN_ATR_PCT` (0.05% of price).
+6. `TPE_MIN_SL_POINTS` 8.0 forced 5%+ stops on cheap stocks (TPE could never
+   fire there) — stocks now use a price-relative floor.
+7. Round-number levels: OIS/SRF/confluence-scoring used 50/100-point steps
+   for stocks — now `config.round_step_for(base, price)` (price-banded ₹1/5/
+   10/50/100; instrument step for indices).
+8. Structure score baseline (10/25 abs pts) — now ATR%-of-price with per-class
+   baselines (index 0.035%, stock 0.12%).
+9. **Emission budget** — 46 bases × 2/direction allowed ~184 signals/day and
+   scan-order decided who got through. Scan now scores all survivors first,
+   ranks by confidence, then emits under `INDIA_MAX_SIGNALS_PER_SCAN` (3) and
+   `INDIA_MAX_SIGNALS_PER_DAY` (10) with `scan_cap_gate`/`daily_cap_gate`
+   telemetry. Duplicate-direction moved to the emission stage.
+
+**Business rules that were unimplemented:**
+10. **IB11** min-scalp gate — see Known Issues (resolved).
+11. **IB16** expiry-day +5 confidence floor — implemented
+    (`INDIA_EXPIRY_CONFIDENCE_BUMP`). Stock bases key expiry-day off their
+    monthly contract expiry (new `is_contract_expiry_day`), not the weekly
+    Tuesday. EGS window corrected 13:00→13:30 per IB16.
+12. **IB13** macro-event gate — `config/macro_events.json` (verified RBI MPC
+    announcement dates 2026-08-05 / 10-07 / 12-04 + Budget 2027-02-01) via
+    new `EventCalendar`, enforced in `event_risk_gate`.
+
+**Data / measurement hygiene:**
+13. `aggregate_candles` grouped by fixed count from the oldest bar — 60m
+    seeds drifted across the 75-bar NSE day and could merge two sessions
+    into one candle. Now clock-time bucketed per day (matches live bars).
+14. Seed no longer double-writes the currently-forming 5m bucket.
+15. Outcome tracking ran only while OPEN — TP/SL touches during CLOSING
+    (15:20–15:30) were misrecorded EXPIRED. Monitor now runs through CLOSING
+    plus a final check before force-close.
+16. OI quotes polling batched (46 sequential calls/min → 1 call of 50
+    symbols) with VIX riding along as a WS-independent fallback; VIX=0 no
+    longer awards the low-VIX scoring bonus.
+17. MA_CROSS detects the 15m cross on completed bars only (no building-bar
+    flicker entries).
+
+**Watch next session:** live volume ratios will drop to honest levels — if
+emission rate falls too far, the loosened floors (Session 8b) are the knob,
+not the volume gates.
 
 ---
 

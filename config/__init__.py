@@ -215,6 +215,50 @@ INSTRUMENTS: dict[str, Instrument] = {
 # ATR as a % of price below which the 60m/daily regime is judged QUIET.
 REGIME_QUIET_ATR_PCT: float = _safe_float("REGIME_QUIET_ATR_PCT", 0.15)
 
+
+# --- price-relative scaling for the stock universe ------------------------
+# The index instruments carry absolute-point tunables (min scalp points, round
+# step). Stocks span ₹100–₹25,000, so absolute points are meaningless there —
+# these helpers give every consumer one price-aware answer for any base.
+
+# Minimum viable TP1 distance for stock bases, % of entry (IB11 equivalent —
+# covers round-trip STT + brokerage + slippage on stock futures).
+MIN_SCALP_PCT: float = _safe_float("INDIA_MIN_SCALP_PCT", 0.10)
+
+
+def min_scalp_points_for(base: str, price: float) -> float:
+    """IB11 minimum viable TP1 distance in points for *base* at *price*.
+
+    Index instruments use their NSE-verified absolute floors; stock bases
+    scale by price (``MIN_SCALP_PCT``).
+    """
+    inst = INSTRUMENTS.get(base)
+    if inst is not None:
+        return float(inst.min_scalp_points)
+    return price * MIN_SCALP_PCT / 100.0
+
+
+def round_step_for(base: str, price: float) -> float:
+    """Psychological round-number step for *base* at *price*.
+
+    Indices use their instrument-configured step (NIFTY 50, BANKNIFTY 100).
+    Stocks use a price-banded step matching how NSE equity actually clusters
+    (₹1 under ₹150, ₹5 under ₹750, ₹10 under ₹1,500, ₹50 under ₹7,500,
+    ₹100 above).
+    """
+    inst = INSTRUMENTS.get(base)
+    if inst is not None:
+        return inst.round_step
+    if price < 150:
+        return 1.0
+    if price < 750:
+        return 5.0
+    if price < 1500:
+        return 10.0
+    if price < 7500:
+        return 50.0
+    return 100.0
+
 # --- confidence tiers ----------------------------------------------------
 # Emit floor and A+ cutoff on the 0-100 confidence score (spec §11/§13.1).
 # Below the floor a candidate is FILTERED (no FCM, no DB write).
@@ -350,8 +394,18 @@ EGS_SL_ATR_MULT: float = _safe_float("EGS_SL_ATR_MULT", 1.0)
 EGS_MIN_SL_PCT: float = _safe_float("EGS_MIN_SL_PCT", 0.06)
 EGS_MAX_SL_PCT: float = _safe_float("EGS_MAX_SL_PCT", 0.80)
 
+# --- expiry-day emission posture (IB16) -----------------------------------
+# On the weekly (index) / contract (stock) expiry day the confidence emit
+# floor is raised by this many points — harder to emit into gamma noise.
+EXPIRY_CONFIDENCE_BUMP: float = _safe_float("INDIA_EXPIRY_CONFIDENCE_BUMP", 5.0)
+
 # --- data files ----------------------------------------------------------
 _CONFIG_DIR = Path(__file__).resolve().parent
 NSE_HOLIDAYS_FILE: str = _safe_str(
     "NSE_HOLIDAYS_FILE", str(_CONFIG_DIR / "nse_holidays.json")
+)
+# Macro binary-event dates (IB13): RBI MPC announcement days, Union Budget.
+# The event-risk gate suppresses all signals on these dates.
+MACRO_EVENTS_FILE: str = _safe_str(
+    "MACRO_EVENTS_FILE", str(_CONFIG_DIR / "macro_events.json")
 )

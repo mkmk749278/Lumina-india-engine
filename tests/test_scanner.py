@@ -11,7 +11,13 @@ from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
 from src.market.candle import Candle
-from src.scanner import _MAX_PER_DIRECTION, GateChain, IndiaScanner
+from src.scanner import (
+    _MAX_PER_DAY,
+    _MAX_PER_DIRECTION,
+    _MAX_PER_SCAN,
+    GateChain,
+    IndiaScanner,
+)
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
 from src.signals.model import Direction, IndiaContext, IndiaSignal, SetupClass, Tier
@@ -151,14 +157,14 @@ def test_duplicate_direction_gate_suppresses_at_cap() -> None:
     now = _ist(10, 0)
 
     # Fill the per-(base, direction) daily cap; the next same-direction
-    # candidate is then suppressed.
+    # candidate is then suppressed at the emission stage.
     for _ in range(_MAX_PER_DIRECTION):
         chain.record_emission(
             SetupClass.VOLUME_SURGE_BREAKOUT, _BASE, Direction.LONG, now
         )
 
-    result = chain.check(
-        sig, ctx, SessionState.OPEN, now + timedelta(seconds=600)
+    result = chain.check_emission(
+        sig, ctx, now + timedelta(seconds=600), emitted_this_scan=0
     )
     assert result == "duplicate_direction_gate"
 
@@ -173,8 +179,10 @@ def test_duplicate_direction_gate_allows_below_cap() -> None:
     # setup may still fire (spaced by its own per-setup cooldown).
     chain.record_emission(SetupClass.OPENING_RANGE_BREAKOUT, _BASE, Direction.LONG, now)
 
-    result = chain.check(sig, ctx, SessionState.OPEN, now + timedelta(seconds=600))
-    assert result != "duplicate_direction_gate"
+    result = chain.check_emission(
+        sig, ctx, now + timedelta(seconds=600), emitted_this_scan=0
+    )
+    assert result is None
 
 
 def test_duplicate_direction_gate_passes_different_direction() -> None:
@@ -185,8 +193,35 @@ def test_duplicate_direction_gate_passes_different_direction() -> None:
 
     chain.record_emission(SetupClass.VOLUME_SURGE_BREAKOUT, _BASE, Direction.LONG, now)
 
-    result = chain.check(sig, ctx, SessionState.OPEN, now + timedelta(seconds=600))
-    assert result != "duplicate_direction_gate"
+    result = chain.check_emission(
+        sig, ctx, now + timedelta(seconds=600), emitted_this_scan=0
+    )
+    assert result is None
+
+
+def test_scan_cap_gate_suppresses_overflow_within_one_scan() -> None:
+    chain = GateChain()
+    sig = make_signal(direction=Direction.LONG)
+    ctx = make_context(base=_BASE, atr14_5m=10.0)
+    result = chain.check_emission(
+        sig, ctx, _ist(10, 0), emitted_this_scan=_MAX_PER_SCAN
+    )
+    assert result == "scan_cap_gate"
+
+
+def test_daily_cap_gate_suppresses_after_budget_spent() -> None:
+    chain = GateChain()
+    sig = make_signal(direction=Direction.LONG)
+    now = _ist(10, 0)
+    # Spend the whole daily budget across many bases so the per-direction
+    # cap never triggers first.
+    for i in range(_MAX_PER_DAY):
+        chain.record_emission(
+            SetupClass.VOLUME_SURGE_BREAKOUT, f"STOCK{i}", Direction.LONG, now
+        )
+    ctx = make_context(base=_BASE, atr14_5m=10.0)
+    result = chain.check_emission(sig, ctx, now, emitted_this_scan=0)
+    assert result == "daily_cap_gate"
 
 
 def test_confidence_floor_gate_suppresses_low_score() -> None:

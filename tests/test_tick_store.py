@@ -68,8 +68,11 @@ def test_seed_aggregates_60m_from_5m() -> None:
     ]
     store.seed(_SYM, candles)
     c60 = store.get_candles_60m(_SYM)
-    assert len(c60) == 1
-    assert c60[0].volume == 6000.0
+    # Clock-hour buckets: 09:00 holds 09:15–09:55 (9 bars), 10:00 the rest.
+    assert len(c60) == 2
+    assert c60[0].volume == 4500.0
+    assert c60[1].volume == 1500.0
+    assert sum(c.volume for c in c60) == 6000.0
 
 def test_seed_with_explicit_15m() -> None:
     store = IndiaTickStore()

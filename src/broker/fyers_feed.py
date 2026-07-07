@@ -29,11 +29,16 @@ from typing import Any
 import httpx
 
 import config
-from src.broker.history_utils import aggregate_candles, prev_session_levels
+from src.broker.history_utils import (
+    CumulativeVolume,
+    aggregate_candles,
+    prev_session_levels,
+)
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
 from src.market.candle import Candle
+from src.regime import Regime, classify
 from src.session.expiry_manager import ExpiryManager
 from src.utils import get_logger
 
@@ -48,9 +53,26 @@ _QUOTES_URL = f"{_DATA_BASE}/quotes"
 _OPTION_CHAIN_URL = f"{_DATA_BASE}/options-chain-v3"
 
 _OI_POLL_INTERVAL = config._safe_int("FYERS_OI_POLL_SEC", 60)
+# Option-chain poll cadence (PCR + max-pain). One REST call per index base.
+_CHAIN_POLL_INTERVAL = config._safe_int("FYERS_CHAIN_POLL_SEC", 300)
+# Fyers quotes endpoint accepts up to 50 comma-separated symbols per call.
+_QUOTES_BATCH_SIZE = 50
 _VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
 _HISTORY_RESOLUTION = "5"
+_DAILY_RESOLUTION = "D"
+# ~300 calendar days -> ~200 daily bars; classify() needs >= 56.
+_DAILY_FETCH_DAYS = 300
 _MAX_CANDLES = 500
+
+# Fyers spot-index symbols for option-chain requests. The futures symbol is
+# not a valid option-chain underlier, and the underliers are NOT plain
+# ``NSE:{base}-INDEX`` (NIFTY spot is ``NSE:NIFTY50-INDEX``).
+_INDEX_CHAIN_SYMBOL: dict[str, str] = {
+    "NIFTY": "NSE:NIFTY50-INDEX",
+    "BANKNIFTY": "NSE:NIFTYBANK-INDEX",
+    "FINNIFTY": "NSE:FINNIFTY-INDEX",
+    "NIFTYNXT50": "NSE:NIFTYNEXT50-INDEX",
+}
 # The seed fetch must reach back far enough that the aggregated 60m series has
 # >=56 bars (EMA21/EMA55 regime needs slow+1). ~11 trading days of market hours
 # clears that (11 * 6.5h ~= 71 60m bars) and stays under Fyers' ~1000-candle
@@ -82,12 +104,15 @@ class FyersDataFeed:
         market_data: IndiaMarketData,
         expiry_mgr: ExpiryManager,
         on_prev_day: Callable[[str, float, float, float], None] | None = None,
+        on_daily_regime: Callable[[str, Regime], None] | None = None,
     ) -> None:
         self._on_prev_day = on_prev_day
+        self._on_daily_regime = on_daily_regime
         self._tick = tick_store
         self._oi = oi_store
         self._mkt = market_data
         self._expiry = expiry_mgr
+        self._cum_vol = CumulativeVolume()
 
         self._client_id: str = ""
         self._access_token: str = ""
@@ -182,6 +207,11 @@ class FyersDataFeed:
         range_to = int(now.timestamp())
         range_from = int((now - timedelta(hours=_FETCH_WINDOW_HOURS)).timestamp())
         ring_cutoff = now - timedelta(hours=_RING_SEED_HOURS)
+        # The current 5m bucket is still forming — live ticks will rebuild it.
+        # Seeding it as a completed bar would double it in the ring.
+        cur_bucket = now.replace(
+            minute=(now.minute // 5) * 5, second=0, microsecond=0
+        )
 
         for base, symbol in self._symbols.items():
             try:
@@ -221,26 +251,94 @@ class FyersDataFeed:
                         *levels,
                     )
 
+                completed = [c for c in candles if c.ts < cur_bucket]
+
                 # 5m ring seeds the recent intraday tail; 15m/60m seed from the
                 # full window so the higher-timeframe regime has real history at
                 # session open (aggregating 60m off the short 5m tail would only
                 # yield a handful of bars).
-                recent = [c for c in candles if c.ts >= ring_cutoff] or candles
-                candles_15m = aggregate_candles(candles, 15)
-                candles_60m = aggregate_candles(candles, 60)
+                recent = [c for c in completed if c.ts >= ring_cutoff] or completed
+                candles_15m = aggregate_candles(completed, 15)
+                candles_60m = aggregate_candles(completed, 60)
                 self._tick.seed(symbol, recent, candles_15m, candles_60m)
+
+                # Rebuild today's day-open / opening range / intraday extremes
+                # so a mid-session (re)start doesn't blind ORB/FAR and the
+                # circuit gate for the rest of the day. The forming bucket is
+                # fine to include here — extremes only extend.
+                todays = [c for c in candles if c.ts.date() == now.date()]
+                if todays:
+                    self._tick.seed_intraday_state(symbol, todays, now)
+
                 logger.info(
-                    "seeded {} with {} 5m / {} 15m / {} 60m candles",
+                    "seeded {} with {} 5m / {} 15m / {} 60m candles"
+                    " ({} bars today)",
                     base,
                     len(recent),
                     len(candles_15m),
                     len(candles_60m),
+                    len(todays),
                 )
+
+                await self._seed_daily_regime(base, symbol, now)
 
             except httpx.HTTPError:
                 logger.opt(exception=True).warning(
                     "historical seed HTTP error for {}", base
                 )
+
+        # Live volume deltas re-baseline against the fresh seed.
+        self._cum_vol.reset()
+
+    async def _seed_daily_regime(
+        self, base: str, symbol: str, now: datetime
+    ) -> None:
+        """Fetch daily candles and classify the daily-timeframe regime.
+
+        ``regime_daily`` previously sat hardcoded RANGING — the HTF component
+        of confidence scoring could never see a real daily trend. One REST
+        call per base per seed (once a day) — nowhere near the hot path.
+        """
+        if self._on_daily_regime is None or self._http is None:
+            return
+        try:
+            resp = await self._http.get(
+                _HISTORY_URL,
+                params={
+                    "symbol": symbol,
+                    "resolution": _DAILY_RESOLUTION,
+                    "date_format": "0",
+                    "range_from": str(
+                        int((now - timedelta(days=_DAILY_FETCH_DAYS)).timestamp())
+                    ),
+                    "range_to": str(int(now.timestamp())),
+                    "cont_flag": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("s") != "ok":
+                logger.warning(
+                    "daily history fetch failed for {}: {}",
+                    base,
+                    data.get("message", "unknown"),
+                )
+                return
+            daily = self._parse_history_candles(data.get("candles", []))
+            # Exclude today's forming daily bar from the classification.
+            daily = [c for c in daily if c.ts.date() < now.date()]
+            regime = classify(daily) if len(daily) >= 56 else Regime.RANGING
+            self._on_daily_regime(symbol, regime)
+            logger.info(
+                "daily regime for {}: {} ({} daily bars)",
+                base,
+                regime.value,
+                len(daily),
+            )
+        except httpx.HTTPError:
+            logger.opt(exception=True).warning(
+                "daily regime fetch HTTP error for {}", base
+            )
 
     @staticmethod
     def _parse_history_candles(raw: list[list[float]]) -> list[Candle]:
@@ -336,10 +434,15 @@ class FyersDataFeed:
         Fyers SymbolUpdate fields:
           symbol, ltp, vol_traded_today, open_price, high_price, low_price,
           close_price, ch, chp, timestamp, ...
+
+        ``vol_traded_today`` is the *cumulative* day volume — the store needs
+        the per-tick increment, so it goes through the delta tracker first
+        (feeding the raw running total inflated live-bar volume by orders of
+        magnitude and made every volume gate pass trivially).
         """
         symbol = tick.get("symbol", "")
         ltp = tick.get("ltp", 0.0)
-        volume = tick.get("vol_traded_today", 0.0)
+        cum_volume = tick.get("vol_traded_today", 0.0)
         ts_epoch = tick.get("exch_feed_time", 0) or tick.get("timestamp", 0)
 
         if not symbol or ltp <= 0:
@@ -354,15 +457,24 @@ class FyersDataFeed:
             self._mkt.update_vix(ltp)
             return
 
+        volume = self._cum_vol.delta(symbol, cum_volume, ts)
         self._tick.on_tick(symbol, ltp, volume, ts)
 
     # ── REST: OI + option chain polling ─────────────────────────────────
 
     async def _poll_oi_loop(self) -> None:
-        """Poll option chain every ``_OI_POLL_INTERVAL`` seconds."""
+        """Poll futures OI every ``_OI_POLL_INTERVAL`` seconds and the index
+        option chains (PCR + max-pain) every ``_CHAIN_POLL_INTERVAL``."""
+        last_chain_poll = 0.0
         while self._running:
             try:
                 await self._fetch_oi_data()
+                now_mono = asyncio.get_running_loop().time()
+                if now_mono - last_chain_poll >= _CHAIN_POLL_INTERVAL:
+                    last_chain_poll = now_mono
+                    for base in self._symbols:
+                        if base in _INDEX_CHAIN_SYMBOL:
+                            await self.fetch_option_chain(base)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -370,14 +482,26 @@ class FyersDataFeed:
             await asyncio.sleep(_OI_POLL_INTERVAL)
 
     async def _fetch_oi_data(self) -> None:
-        """Fetch quotes (for OI on futures) and update stores."""
+        """Fetch quotes (OI on futures + VIX fallback) in batched calls.
+
+        One symbol per request was 46+ HTTP calls a minute after the universe
+        expansion; the quotes endpoint takes up to 50 comma-separated symbols,
+        so this is 1–2 calls. VIX rides along so the event-risk gate has a
+        value even before the first WebSocket VIX tick after a (re)start.
+        """
         assert self._http is not None
 
-        for base, symbol in self._symbols.items():
+        symbols = list(self._symbols.values())
+        if _VIX_SYMBOL not in symbols:
+            symbols.append(_VIX_SYMBOL)
+
+        now = datetime.now(config.IST)
+        for i in range(0, len(symbols), _QUOTES_BATCH_SIZE):
+            chunk = symbols[i : i + _QUOTES_BATCH_SIZE]
             try:
                 resp = await self._http.get(
                     _QUOTES_URL,
-                    params={"symbols": symbol},
+                    params={"symbols": ",".join(chunk)},
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -385,48 +509,55 @@ class FyersDataFeed:
                 if data.get("s") != "ok":
                     continue
 
-                quotes = data.get("d", [])
-                if not quotes:
-                    continue
-
-                q = quotes[0].get("v", {})
-                oi = q.get("open_interest", 0.0)
-                if oi > 0:
-                    now = datetime.now(config.IST)
-                    self._oi.update_oi(symbol, oi, now)
+                for quote in data.get("d", []):
+                    name = quote.get("n", "")
+                    q = quote.get("v", {})
+                    if name == _VIX_SYMBOL:
+                        vix = q.get("lp", 0.0) or 0.0
+                        if vix > 0:
+                            self._mkt.update_vix(vix)
+                        continue
+                    oi = q.get("open_interest", 0.0)
+                    if name and oi > 0:
+                        self._oi.update_oi(name, oi, now)
 
             except httpx.HTTPError:
                 logger.opt(exception=True).debug(
-                    "quote fetch failed for {}", base
+                    "quote batch fetch failed ({} symbols)", len(chunk)
                 )
 
     async def fetch_option_chain(self, base: str) -> None:
-        """Fetch option chain for OI aggregation and max-pain computation.
+        """Fetch the index option chain for PCR + max-pain updates.
 
-        Call this periodically (e.g. every 5 min) for PCR and max-pain updates.
+        Called from the poll loop every ``_CHAIN_POLL_INTERVAL`` for each
+        index base. Without a ``timestamp`` param Fyers returns the nearest
+        expiry's chain — correct for weekly (NIFTY) and monthly-only
+        (BANKNIFTY/FINNIFTY/NIFTYNXT50) cadences alike, so no expiry
+        bookkeeping is needed here.
         """
         assert self._http is not None
 
-        # Option chain (max-pain / PCR) keys off the nearest weekly options
-        # expiry, not the monthly futures roll.
-        expiry = self._expiry.get_weekly_expiry_date()
-        expiry_epoch = int(
-            datetime.combine(expiry, datetime.min.time()).timestamp()
-        )
+        underlier = _INDEX_CHAIN_SYMBOL.get(base)
+        if underlier is None:
+            return
 
         try:
             resp = await self._http.get(
                 _OPTION_CHAIN_URL,
                 params={
-                    "symbol": f"NSE:{base}-INDEX",
+                    "symbol": underlier,
                     "strikecount": "20",
-                    "timestamp": str(expiry_epoch),
                 },
             )
             resp.raise_for_status()
             data = resp.json()
 
             if data.get("s") != "ok":
+                logger.debug(
+                    "option chain fetch for {} returned {}",
+                    base,
+                    data.get("message", data.get("s")),
+                )
                 return
 
             self._process_option_chain(base, data.get("data", {}))
@@ -439,37 +570,58 @@ class FyersDataFeed:
     def _process_option_chain(
         self, base: str, chain_data: dict[str, Any]
     ) -> None:
-        """Parse option chain for PCR and max-pain computation."""
-        oc_list = chain_data.get("oc", [])
-        if not oc_list:
+        """Parse a Fyers v3 option chain for PCR and max-pain.
+
+        The v3 response carries a flat ``optionsChain`` list (one row per
+        strike per option_type CE/PE; the underlying rides along with
+        ``strike_price`` -1) plus ``callOi``/``putOi`` chain totals. The
+        legacy nested ``oc`` shape is kept as a fallback.
+        """
+        call_by_strike: dict[float, float] = {}
+        put_by_strike: dict[float, float] = {}
+
+        rows = chain_data.get("optionsChain", [])
+        if rows:
+            for row in rows:
+                strike = float(row.get("strike_price", 0.0) or 0.0)
+                if strike <= 0:
+                    continue
+                opt_type = str(row.get("option_type", "")).upper()
+                oi = float(row.get("oi", 0.0) or 0.0)
+                if opt_type == "CE":
+                    call_by_strike[strike] = call_by_strike.get(strike, 0.0) + oi
+                elif opt_type == "PE":
+                    put_by_strike[strike] = put_by_strike.get(strike, 0.0) + oi
+        else:
+            for entry in chain_data.get("oc", []):
+                strike = float(entry.get("strike_price", 0.0) or 0.0)
+                if strike <= 0:
+                    continue
+                call_by_strike[strike] = float(
+                    (entry.get("ce") or {}).get("oi", 0.0) or 0.0
+                )
+                put_by_strike[strike] = float(
+                    (entry.get("pe") or {}).get("oi", 0.0) or 0.0
+                )
+
+        strikes = sorted(set(call_by_strike) | set(put_by_strike))
+        if not strikes:
             return
+        call_oi_list = [call_by_strike.get(s, 0.0) for s in strikes]
+        put_oi_list = [put_by_strike.get(s, 0.0) for s in strikes]
 
-        total_call_oi = 0.0
-        total_put_oi = 0.0
-        strikes: list[float] = []
-        call_oi_list: list[float] = []
-        put_oi_list: list[float] = []
-
-        for entry in oc_list:
-            strike = entry.get("strike_price", 0.0)
-            if strike <= 0:
-                continue
-
-            ce = entry.get("ce", {})
-            pe = entry.get("pe", {})
-            c_oi = ce.get("oi", 0.0)
-            p_oi = pe.get("oi", 0.0)
-
-            total_call_oi += c_oi
-            total_put_oi += p_oi
-            strikes.append(strike)
-            call_oi_list.append(c_oi)
-            put_oi_list.append(p_oi)
+        # Prefer the chain-total fields when present (whole chain, not just
+        # the fetched strike window).
+        total_call_oi = float(chain_data.get("callOi", 0.0) or 0.0) or sum(
+            call_oi_list
+        )
+        total_put_oi = float(chain_data.get("putOi", 0.0) or 0.0) or sum(
+            put_oi_list
+        )
 
         if total_call_oi > 0 and total_put_oi > 0:
-            self._oi.update_pcr(total_put_oi, total_call_oi)
+            self._oi.update_pcr(total_put_oi, total_call_oi, base)
 
-        if strikes:
-            self._mkt.compute_and_set_max_pain(
-                base, strikes, call_oi_list, put_oi_list
-            )
+        self._mkt.compute_and_set_max_pain(
+            base, strikes, call_oi_list, put_oi_list
+        )

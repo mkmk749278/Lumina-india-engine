@@ -138,12 +138,17 @@ async def test_fetch_oi_data_updates_store() -> None:
         "s": "ok",
         "d": [
             {
+                "n": _SYM,
                 "v": {
                     "symbol": _SYM,
                     "ltp": 24100.0,
                     "open_interest": 5_000_000.0,
-                }
-            }
+                },
+            },
+            {
+                "n": "NSE:INDIAVIX-INDEX",
+                "v": {"lp": 13.5},
+            },
         ],
     }
     mock_response.raise_for_status = MagicMock()
@@ -155,6 +160,10 @@ async def test_fetch_oi_data_updates_store() -> None:
     await feed._fetch_oi_data()
 
     assert feed._oi.get_current_oi(_SYM) == 5_000_000.0
+    # VIX rides along in the quotes batch (WS-independent fallback).
+    assert feed._mkt.get_vix() == 13.5
+    # Batched: one request covers all symbols + VIX, not one per symbol.
+    assert mock_client.get.await_count == 1
 
 
 async def test_fetch_oi_data_skips_on_error() -> None:

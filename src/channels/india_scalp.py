@@ -531,10 +531,16 @@ class TrendPullbackEma(Evaluator):
         direction = Direction.LONG if long else Direction.SHORT
         entry = current.close
         pad = atr * config.TPE_SL_ATR_MULT
-        if long:
-            sl = min(current.low - pad, entry - config.TPE_MIN_SL_POINTS)
+        # Absolute-point SL floor is index-scaled; stocks use a price-relative
+        # floor (8 points is 5%+ of a cheap stock — it rejected every setup).
+        if ctx.base in config.INSTRUMENTS:
+            min_sl_dist = config.TPE_MIN_SL_POINTS
         else:
-            sl = max(current.high + pad, entry + config.TPE_MIN_SL_POINTS)
+            min_sl_dist = entry * config.TPE_MIN_SL_PCT / 100.0
+        if long:
+            sl = min(current.low - pad, entry - min_sl_dist)
+        else:
+            sl = max(current.high + pad, entry + min_sl_dist)
         sl_dist = abs(entry - sl)
         if entry <= 0 or sl_dist <= 0:
             return None
@@ -598,7 +604,7 @@ class OiSpikeReversal(Evaluator):
         current, prev = ctx.candles_5m[-1], ctx.candles_5m[-2]
         atr = ctx.atr14_5m
         tol = atr * config.OIS_NEAR_LEVEL_ATR_MULT
-        step = config.INSTRUMENTS[ctx.base].round_step if ctx.base in config.INSTRUMENTS else 50.0
+        step = config.round_step_for(ctx.base, current.close)
         base_round = round(current.close / step) * step
         swing_low = last_swing_low(ctx.candles_15m, lookback=20, width=1)
         swing_high = last_swing_high(ctx.candles_15m, lookback=20, width=1)
@@ -691,11 +697,7 @@ class SrFlipRetest(Evaluator):
         if atr5 <= 0:
             return None
 
-        step = (
-            config.INSTRUMENTS[ctx.base].round_step
-            if ctx.base in config.INSTRUMENTS
-            else 50.0
-        )
+        step = config.round_step_for(ctx.base, current.close)
         book = LevelBook.build(
             ctx.candles_15m,
             round_step=step,
@@ -1159,9 +1161,10 @@ class MaCrossTrendShift(Evaluator):
     def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
         if not self.enabled:
             return None
-        if len(ctx.candles_15m) < 57:
+        bars15 = self._completed_bars(ctx)
+        if len(bars15) < 57:
             return None
-        closes15 = [c.close for c in ctx.candles_15m]
+        closes15 = [c.close for c in bars15]
         ema21_series = ema_series(closes15, 21)
         ema55_series = ema_series(closes15, 55)
         ema21_cur = ema21_series[-1]
@@ -1181,15 +1184,15 @@ class MaCrossTrendShift(Evaluator):
         if direction == Direction.SHORT and ctx.regime_60m is Regime.TRENDING_UP:
             return None
 
-        cross_bar = ctx.candles_15m[-1]
+        cross_bar = bars15[-1]
         if ctx.volume_avg_15m_20 > 0:
             if cross_bar.volume / ctx.volume_avg_15m_20 < config.MAC_VOLUME_MULT:
                 return None
 
         entry = cross_bar.close
-        if len(ctx.candles_15m) >= 15:
+        if len(bars15) >= 15:
             try:
-                atr15 = compute_atr(ctx.candles_15m, 14)
+                atr15 = compute_atr(bars15, 14)
             except ValueError:
                 atr15 = ctx.atr14_5m
         else:
@@ -1245,13 +1248,32 @@ class MaCrossTrendShift(Evaluator):
             reason="EMA21/55 cross on 15m",
         )
 
+    @staticmethod
+    def _completed_bars(ctx: IndiaContext) -> list[Candle]:
+        """15m bars with the still-forming bar dropped.
+
+        A cross detected on the building bar can flicker in and out with
+        every tick and print entry/SL off a half-formed close; a completed
+        bar's cross is decided once.
+        """
+        bars = ctx.candles_15m
+        if not bars or ctx.scan_time_ist is None:
+            return list(bars)
+        last_start = bars[-1].ts
+        start_min = last_start.hour * 60 + last_start.minute
+        now_min = ctx.scan_time_ist.hour * 60 + ctx.scan_time_ist.minute
+        if 0 <= now_min - start_min < 15:
+            return list(bars[:-1])
+        return list(bars)
+
 
 class ExpiryGammaSqueeze(Evaluator):
-    """§10.14 — expiry-day gamma squeeze toward max pain (13:00–15:00 IST).
+    """§10.14 — expiry-day gamma squeeze toward max pain (13:30–15:00 IST).
 
     Only active when ``is_expiry_day`` is True and scan time is in the
-    last-2-hours window. Fires at most once per instrument per session
-    (cooldown enforced at scanner level).
+    IB16 window (after 13:30 IST — the last ~2 hours of expiry trading).
+    Fires at most once per instrument per session (cooldown enforced at
+    scanner level).
     """
 
     setup_class = SetupClass.EXPIRY_GAMMA_SQUEEZE
@@ -1266,7 +1288,7 @@ class ExpiryGammaSqueeze(Evaluator):
         from datetime import time as _time
 
         if ctx.scan_time_ist is not None:
-            if not (_time(13, 0) <= ctx.scan_time_ist <= _time(15, 0)):
+            if not (_time(13, 30) <= ctx.scan_time_ist <= _time(15, 0)):
                 return None
 
         if ctx.max_pain_strike is None or not ctx.candles_5m:

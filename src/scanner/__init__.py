@@ -1,20 +1,27 @@
-"""India scanner — 30s scan loop + 9-gate chain + scoring.
+"""India scanner — 30s scan loop + gate chain + scoring + ranked emission.
 
 Runs every ``SCAN_INTERVAL_SEC`` during market hours. For each allowed
-base (NIFTY, BANKNIFTY), builds an ``IndiaContext``, runs all enabled
-evaluators, gates candidates through the 9-gate chain, scores survivors,
-and returns emitted signals for the signal router.
+base, builds an ``IndiaContext``, runs all enabled evaluators, gates
+candidates, scores survivors, then emits highest-confidence-first under
+the per-scan / per-day / per-direction caps.
 
-Gate chain (spec §9):
+Pre-score gates (spec §9):
   1. session_gate — market hours?
   2. spread_gate — bid-ask too wide? (Phase 2 — always pass in Phase 1)
   3. cooldown_gate — evaluator fired recently?
-  4. event_risk_gate — VIX > 25 or macro event?
+  4. event_risk_gate — VIX > 25 or scheduled macro event day (IB13)?
   5. circuit_check_gate — extreme intraday move?
   6. min_atr_gate — ATR above tradeable threshold?
-  7. oi_liquidity_gate — enough open interest?
-  8. duplicate_direction_gate — same-direction signal already emitted?
-  9. confidence_floor_gate — score >= emit floor?
+  7. min_scalp_gate — TP1 distance clears the IB11 STT-viable minimum?
+  8. oi_liquidity_gate — enough open interest?
+
+Post-score:
+  9. confidence_floor_gate — score >= emit floor (+5 on expiry day, IB16)?
+
+Emission stage (highest confidence first across the whole scan):
+  10. duplicate_direction_gate — same-direction cap per base per day
+  11. scan_cap_gate / daily_cap_gate — universe-wide emission budget
+      (46 bases × 2 directions would otherwise allow ~184 signals/day)
 
 Every gate rejection is logged with gate name + reason (suppression
 telemetry — CLAUDE.md). Surface via ``/api/india/suppressed`` and ops.
@@ -45,6 +52,7 @@ from src.channels import (
     VolumeSurgeBreakout,
 )
 from src.data.india_context_builder import IndiaContextBuilder
+from src.session.event_calendar import EventCalendar
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
 from src.signal_quality import IndiaSignalScoringEngine, tier_for
@@ -64,6 +72,9 @@ _CIRCUIT_MOVE_PCT: float = config._safe_float(
 )
 _COOLDOWN_SEC: int = config._safe_int("INDIA_COOLDOWN_SEC", 300)
 _MIN_ATR_POINTS: float = config._safe_float("INDIA_MIN_ATR_POINTS", 3.0)
+# ATR floor for stock bases, % of price (absolute points are index-scaled —
+# 3 NIFTY points is 0.01% of the index but 2.5% of a ₹120 stock).
+_MIN_ATR_PCT: float = config._safe_float("INDIA_MIN_ATR_PCT", 0.05)
 _MIN_OI: float = config._safe_float("INDIA_MIN_OI", 100_000.0)
 # Max signals per (base, direction) per day. The per-setup cooldown still
 # spaces repeats; this caps how many distinct same-direction setups can emit
@@ -71,6 +82,11 @@ _MIN_OI: float = config._safe_float("INDIA_MIN_OI", 100_000.0)
 # bases — below the 3+/day target once any single setup misfired; 2 gives
 # room for a genuine second same-direction setup without spamming.
 _MAX_PER_DIRECTION: int = config._safe_int("INDIA_MAX_SIGNALS_PER_DIRECTION", 2)
+# Universe-wide emission budget. With 46 bases a correlated index move can
+# validate a dozen near-identical stock breakouts in one scan — subscribers
+# get the best few, not a flood. Both env-overridable.
+_MAX_PER_SCAN: int = config._safe_int("INDIA_MAX_SIGNALS_PER_SCAN", 3)
+_MAX_PER_DAY: int = config._safe_int("INDIA_MAX_SIGNALS_PER_DAY", 10)
 
 
 # ── Gate result ──────────────────────────────────────────────────────
@@ -92,10 +108,32 @@ class Suppression:
 class GateChain:
     """Stateful gate chain — tracks cooldowns and daily emissions."""
 
-    def __init__(self) -> None:
+    def __init__(self, events: EventCalendar | None = None) -> None:
+        self._events = events or EventCalendar()
         self._last_fire: dict[str, datetime] = {}
         self._emitted_today: Counter[tuple[str, str]] = Counter()
+        self._emitted_total_today = 0
         self._suppressions: list[Suppression] = []
+
+    def _suppress(
+        self,
+        gate_name: str,
+        reason: str,
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        now: datetime,
+    ) -> str:
+        self._suppressions.append(
+            Suppression(
+                gate=gate_name,
+                reason=reason,
+                setup_class=signal.setup_class,
+                base=ctx.base,
+                direction=signal.direction,
+                ts=now,
+            )
+        )
+        return gate_name
 
     def check(
         self,
@@ -105,7 +143,7 @@ class GateChain:
         now: datetime,
         confidence: float | None = None,
     ) -> str | None:
-        """Run the 9-gate chain. Returns ``None`` if all pass, else the
+        """Run the pre-score gates. Returns ``None`` if all pass, else the
         gate name that suppressed (and appends to ``_suppressions``)."""
 
         for gate_fn in (
@@ -115,38 +153,21 @@ class GateChain:
             self._event_risk_gate,
             self._circuit_check_gate,
             self._min_atr_gate,
+            self._min_scalp_gate,
             self._oi_liquidity_gate,
-            self._duplicate_direction_gate,
         ):
             reason = gate_fn(signal, ctx, session_state, now)
             if reason is not None:
-                gate_name = gate_fn.__name__.lstrip("_")
-                self._suppressions.append(
-                    Suppression(
-                        gate=gate_name,
-                        reason=reason,
-                        setup_class=signal.setup_class,
-                        base=ctx.base,
-                        direction=signal.direction,
-                        ts=now,
-                    )
+                return self._suppress(
+                    gate_fn.__name__.lstrip("_"), reason, signal, ctx, now
                 )
-                return gate_name
 
         if confidence is not None:
-            reason = self._confidence_floor_gate(confidence)
+            reason = self._confidence_floor_gate(confidence, ctx.is_expiry_day)
             if reason is not None:
-                self._suppressions.append(
-                    Suppression(
-                        gate="confidence_floor_gate",
-                        reason=reason,
-                        setup_class=signal.setup_class,
-                        base=ctx.base,
-                        direction=signal.direction,
-                        ts=now,
-                    )
+                return self._suppress(
+                    "confidence_floor_gate", reason, signal, ctx, now
                 )
-                return "confidence_floor_gate"
 
         return None
 
@@ -159,19 +180,50 @@ class GateChain:
     ) -> str | None:
         """Confidence-floor gate only — the pre-score gates already ran, so the
         scanner uses this after scoring instead of re-running the whole chain."""
-        reason = self._confidence_floor_gate(confidence)
+        reason = self._confidence_floor_gate(confidence, ctx.is_expiry_day)
         if reason is not None:
-            self._suppressions.append(
-                Suppression(
-                    gate="confidence_floor_gate",
-                    reason=reason,
-                    setup_class=signal.setup_class,
-                    base=ctx.base,
-                    direction=signal.direction,
-                    ts=now,
-                )
+            return self._suppress(
+                "confidence_floor_gate", reason, signal, ctx, now
             )
-            return "confidence_floor_gate"
+        return None
+
+    def check_emission(
+        self,
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        now: datetime,
+        emitted_this_scan: int,
+    ) -> str | None:
+        """Emission-stage gates, run highest-confidence-first per scan:
+        per-direction daily cap, per-scan cap, universe-wide daily cap."""
+        count = self._emitted_today[(ctx.base, signal.direction)]
+        if count >= _MAX_PER_DIRECTION:
+            return self._suppress(
+                "duplicate_direction_gate",
+                f"{signal.direction} on {ctx.base} already emitted {count}x"
+                f" today (cap {_MAX_PER_DIRECTION})",
+                signal,
+                ctx,
+                now,
+            )
+        if emitted_this_scan >= _MAX_PER_SCAN:
+            return self._suppress(
+                "scan_cap_gate",
+                f"scan already emitted {emitted_this_scan}"
+                f" (cap {_MAX_PER_SCAN}, lower-confidence candidate dropped)",
+                signal,
+                ctx,
+                now,
+            )
+        if self._emitted_total_today >= _MAX_PER_DAY:
+            return self._suppress(
+                "daily_cap_gate",
+                f"{self._emitted_total_today} signals already emitted today"
+                f" (cap {_MAX_PER_DAY})",
+                signal,
+                ctx,
+                now,
+            )
         return None
 
     def record_emission(
@@ -180,10 +232,12 @@ class GateChain:
         key = f"{setup_class}:{base}"
         self._last_fire[key] = now
         self._emitted_today[(base, direction)] += 1
+        self._emitted_total_today += 1
 
     def reset_day(self) -> None:
         self._last_fire.clear()
         self._emitted_today.clear()
+        self._emitted_total_today = 0
         self._suppressions.clear()
 
     @property
@@ -231,8 +285,8 @@ class GateChain:
                 )
         return None
 
-    @staticmethod
     def _event_risk_gate(
+        self,
         signal: IndiaSignal,
         ctx: IndiaContext,
         session_state: SessionState,
@@ -240,6 +294,9 @@ class GateChain:
     ) -> str | None:
         if ctx.india_vix > _VIX_EVENT_THRESHOLD:
             return f"VIX {ctx.india_vix:.1f} > {_VIX_EVENT_THRESHOLD} event threshold"
+        event = self._events.event_on(now.date())
+        if event is not None:
+            return f"macro event day: {event} (IB13 — no signals)"
         return None
 
     @staticmethod
@@ -263,8 +320,39 @@ class GateChain:
         session_state: SessionState,
         now: datetime,
     ) -> str | None:
-        if ctx.atr14_5m < _MIN_ATR_POINTS:
-            return f"ATR {ctx.atr14_5m:.1f} < {_MIN_ATR_POINTS} minimum"
+        # Index bases: absolute-point floor. Stock bases: % of price (a fixed
+        # point floor either suppresses every cheap stock or is meaningless
+        # on an expensive one).
+        if ctx.base in config.INSTRUMENTS:
+            if ctx.atr14_5m < _MIN_ATR_POINTS:
+                return f"ATR {ctx.atr14_5m:.1f} < {_MIN_ATR_POINTS} minimum"
+            return None
+        last = ctx.candles_5m[-1].close if ctx.candles_5m else 0.0
+        floor = last * _MIN_ATR_PCT / 100.0
+        if last > 0 and ctx.atr14_5m < floor:
+            return (
+                f"ATR {ctx.atr14_5m:.2f} < {floor:.2f}"
+                f" ({_MIN_ATR_PCT}% of price) minimum"
+            )
+        return None
+
+    @staticmethod
+    def _min_scalp_gate(
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        session_state: SessionState,
+        now: datetime,
+    ) -> str | None:
+        """IB11 — TP1 must clear the STT-viable minimum move (15 NIFTY /
+        40 BANKNIFTY points; % of price for stocks). Below it the trade
+        cannot pay for its own round-trip costs even when it wins."""
+        tp1_points = abs(signal.tp1 - signal.entry)
+        floor = config.min_scalp_points_for(ctx.base, signal.entry)
+        if tp1_points < floor:
+            return (
+                f"TP1 distance {tp1_points:.1f} pts < IB11 minimum"
+                f" {floor:.1f} pts (STT-viable floor)"
+            )
         return None
 
     @staticmethod
@@ -278,25 +366,17 @@ class GateChain:
             return f"OI {ctx.current_oi:,.0f} < {_MIN_OI:,.0f} minimum"
         return None
 
-    def _duplicate_direction_gate(
-        self,
-        signal: IndiaSignal,
-        ctx: IndiaContext,
-        session_state: SessionState,
-        now: datetime,
-    ) -> str | None:
-        count = self._emitted_today[(ctx.base, signal.direction)]
-        if count >= _MAX_PER_DIRECTION:
-            return (
-                f"{signal.direction} on {ctx.base} already emitted {count}x today"
-                f" (cap {_MAX_PER_DIRECTION})"
-            )
-        return None
-
     @staticmethod
-    def _confidence_floor_gate(confidence: float) -> str | None:
-        if confidence < config.CONFIDENCE_EMIT_FLOOR:
-            return f"confidence {confidence:.0f} < {config.CONFIDENCE_EMIT_FLOOR:.0f} floor"
+    def _confidence_floor_gate(
+        confidence: float, is_expiry_day: bool = False
+    ) -> str | None:
+        floor = config.CONFIDENCE_EMIT_FLOOR
+        note = ""
+        if is_expiry_day:
+            floor += config.EXPIRY_CONFIDENCE_BUMP
+            note = f" (expiry-day +{config.EXPIRY_CONFIDENCE_BUMP:.0f}, IB16)"
+        if confidence < floor:
+            return f"confidence {confidence:.0f} < {floor:.0f} floor{note}"
         return None
 
 
@@ -362,7 +442,7 @@ class IndiaScanner:
         if session_state != SessionState.OPEN and not config.INDIA_DEV_MODE:
             return []
 
-        emitted: list[IndiaSignal] = []
+        scored: list[tuple[IndiaSignal, IndiaContext]] = []
 
         for base, symbol in symbols.items():
             if base not in config.ALLOWED_BASES:
@@ -424,26 +504,47 @@ class IndiaScanner:
                     )
                     continue
 
-                candidate.regime_60m = ctx.regime_60m
-                candidate.regime_daily = ctx.regime_daily
-                candidate.atr_at_entry = ctx.atr14_5m
-                candidate.vix_at_entry = ctx.india_vix
-                candidate.expiry_date = self._expiry.get_contract_expiry_date(now)
-                candidate.days_to_expiry = self._expiry.days_to_expiry(now)
+                scored.append((candidate, ctx))
 
-                self._gates.record_emission(
-                    candidate.setup_class, base, candidate.direction, now
-                )
-                emitted.append(candidate)
+        # Emission stage — the whole scan's survivors compete on confidence,
+        # so when a correlated move validates many setups at once the caps
+        # keep the best few instead of whichever base iterated first.
+        scored.sort(key=lambda pair: pair[0].confidence, reverse=True)
 
-                logger.info(
-                    "SIGNAL {} {} {} conf={:.0f} tier={}",
+        emitted: list[IndiaSignal] = []
+        for candidate, ctx in scored:
+            emit_gate = self._gates.check_emission(
+                candidate, ctx, now, emitted_this_scan=len(emitted)
+            )
+            if emit_gate is not None:
+                logger.debug(
+                    "suppressed {} on {} by {}",
                     candidate.setup_class,
-                    base,
-                    candidate.direction,
-                    confidence,
-                    candidate.tier,
+                    ctx.base,
+                    emit_gate,
                 )
+                continue
+
+            candidate.regime_60m = ctx.regime_60m
+            candidate.regime_daily = ctx.regime_daily
+            candidate.atr_at_entry = ctx.atr14_5m
+            candidate.vix_at_entry = ctx.india_vix
+            candidate.expiry_date = self._expiry.get_contract_expiry_date(now)
+            candidate.days_to_expiry = self._expiry.days_to_expiry(now)
+
+            self._gates.record_emission(
+                candidate.setup_class, ctx.base, candidate.direction, now
+            )
+            emitted.append(candidate)
+
+            logger.info(
+                "SIGNAL {} {} {} conf={:.0f} tier={}",
+                candidate.setup_class,
+                ctx.base,
+                candidate.direction,
+                candidate.confidence,
+                candidate.tier,
+            )
 
         return emitted
 
