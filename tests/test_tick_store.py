@@ -193,6 +193,32 @@ def test_reset_clears_intraday_state() -> None:
     assert store.get_opening_range(_SYM) == (None, None)
 
 
+def test_new_trading_day_auto_resets_intraday_state() -> None:
+    """A tick on a new IST date must drop the prior session's day_open,
+    opening range and intraday extremes — the store is process-scoped and
+    lives across days, so stale intraday state would otherwise freeze the
+    opening range and trip the scanner's stale-day_open circuit gate."""
+    store = IndiaTickStore()
+
+    # Day 1 — establish opening range + day_open near 24000.
+    store.on_tick(_SYM, 24000.0, 100.0, _ist(9, 15, 0))
+    store.on_tick(_SYM, 24080.0, 100.0, _ist(9, 30, 0))
+    store.on_tick(_SYM, 23990.0, 100.0, _ist(9, 45, 0))
+    assert store.get_day_open(_SYM) == 24000.0
+    assert store.get_opening_range(_SYM) == (24080.0, 24000.0)
+
+    # Day 2 — market has gapped ~2000 pts higher; first tick must reset.
+    next_day = _BASE_DT + timedelta(days=1)
+    store.on_tick(_SYM, 26010.0, 100.0, next_day + timedelta(hours=9, minutes=15))
+    store.on_tick(_SYM, 26120.0, 100.0, next_day + timedelta(hours=9, minutes=30))
+
+    assert store.get_day_open(_SYM) == 26010.0
+    or_high, or_low = store.get_opening_range(_SYM)
+    assert or_high == 26120.0
+    assert or_low == 26010.0
+    assert store.get_intraday_low(_SYM) == 26010.0
+
+
 # --- volume average ---
 
 def test_volume_avg_5m() -> None:
