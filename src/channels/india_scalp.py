@@ -551,11 +551,21 @@ class TrendPullbackEma(Evaluator):
             if long
             else entry - sl_dist * config.TPE_TP_RR
         )
-        if long:
-            tp1 = swing if (swing is not None and swing > entry) else fallback
+        # Use the swing as target only if it clears the min R:R; otherwise the
+        # 2R fallback. Without this guard a swing just beyond entry yielded
+        # sub-1 R:R signals (the guard every other swing-target evaluator has).
+        if (
+            swing is not None
+            and ((swing > entry) if long else (swing < entry))
+            and abs(swing - entry) >= sl_dist * config.TPE_MIN_RR
+        ):
+            tp1 = swing
         else:
-            tp1 = swing if (swing is not None and swing < entry) else fallback
+            tp1 = fallback
         tp1_pct = abs(tp1 - entry) / entry * 100.0
+        rr = tp1_pct / sl_pct if sl_pct > 0 else 0.0
+        if rr < config.TPE_MIN_RR:
+            return None
         return _make_signal(
             ctx,
             self.setup_class,
@@ -565,7 +575,7 @@ class TrendPullbackEma(Evaluator):
             tp1,
             sl_pct,
             tp1_pct,
-            tp1_pct / sl_pct,
+            rr,
             htf=True,  # only fires with an aligned 60m trend
             vol_ratio=0.0,
             reason="with-trend EMA pullback reclaim",

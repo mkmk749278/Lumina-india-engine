@@ -234,6 +234,7 @@ TPE_MIN_SL_POINTS: float = _safe_float("TPE_MIN_SL_POINTS", 8.0)
 TPE_MIN_SL_PCT: float = _safe_float("TPE_MIN_SL_PCT", 0.06)
 TPE_MAX_SL_PCT: float = _safe_float("TPE_MAX_SL_PCT", 0.80)
 TPE_TP_RR: float = _safe_float("TPE_TP_RR", 2.0)
+TPE_MIN_RR: float = _safe_float("TPE_MIN_RR", 1.5)
 
 # --- evaluator geometry: OI_SPIKE_REVERSAL (spec §10.13) ----------------
 OIS_OI_SPIKE_PCT: float = _safe_float("OIS_OI_SPIKE_PCT", 3.0)

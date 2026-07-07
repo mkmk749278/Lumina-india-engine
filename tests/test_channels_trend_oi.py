@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import config
 from src.channels.india_scalp import OiSpikeReversal, TrendPullbackEma
 from src.indicators import ema
 from src.regime import Regime
@@ -39,6 +40,35 @@ def test_trend_pullback_long_emits() -> None:
     assert sig.direction == Direction.LONG
     assert sig.sl < sig.entry < sig.tp1
     assert sig.htf_trend_aligned is True  # only fires in an aligned trend
+    assert sig.rr_ratio >= config.TPE_MIN_RR  # never emit sub-floor R:R
+
+
+def test_trend_pullback_falls_back_when_swing_too_near() -> None:
+    """A 15m swing barely beyond entry must NOT be used as TP1 — it produced
+    sub-1 R:R signals in prod (RR 0.2). The evaluator falls back to the 2R
+    target instead."""
+    c5 = _trend_pullback_5m()
+    closes = [x.close for x in c5]
+    e21, e55 = ema(closes, 21), ema(closes, 55)
+    ref = e21 if abs(closes[-1] - e21) <= abs(closes[-1] - e55) else e55
+    entry = ref + 10.0  # the reclaim bar's close
+
+    # Swing high only ~20 pts above entry — well under 1.5R (sl_dist ~46 @ atr 100).
+    near = entry + 20.0
+    c15 = from_closes([entry - 100, entry - 50, entry - 80, near, entry - 40])
+
+    ctx = make_context(
+        regime_60m=Regime.TRENDING_UP,
+        regime_daily=Regime.TRENDING_UP,
+        candles_5m=c5,
+        candles_15m=c15,
+        candles_60m=from_closes([23000.0 + i * 10 for i in range(60)]),
+        atr14_5m=100.0,
+    )
+    sig = TrendPullbackEma().evaluate(ctx)
+    assert sig is not None
+    assert sig.rr_ratio >= config.TPE_MIN_RR
+    assert sig.tp1 > near  # used the 2R fallback, not the near swing
 
 
 def test_trend_pullback_rejected_when_ranging() -> None:
