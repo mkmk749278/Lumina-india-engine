@@ -85,7 +85,7 @@ def test_vsb_rejected_without_oi_confirmation() -> None:
         candles_15m=C15,
         atr14_5m=20.0,
         volume_avg_5m_20=1000.0,
-        oi_change_15m_pct=0.0,  # no fresh OI -> rejected
+        oi_change_15m_pct=-0.5,  # OI unwinding (< VSB_OI_MIN_PCT 0.0) -> rejected
     )
     assert vsb.evaluate(ctx) is None
 

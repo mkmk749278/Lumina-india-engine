@@ -139,16 +139,32 @@ Auth: static Bearer token (`API_STATIC_TOKEN` GitHub secret → env). Firebase a
 
 ## Known Issues / Pending Decisions
 
-### SL-floor tension (owner decision needed)
+### SL-floor tension — LOOSENED (Session 8b), tighten-by-quality next
 
-Multiple evaluators (SR_FLIP, FAR, TPE, VSB, PCR) produce SL distances under their configured % floors at normal NIFTY 5m ATR (~15–30 pts). This means they'll fire rarely or never in calm market conditions. Test fixtures use elevated ATR (60–100 pts) to exercise full paths.
+Root-caused: every evaluator's `MIN_SL_PCT` floor was 0.15–0.30% (a 42–84 pt
+NIFTY stop at ~27,900), but IB11's STT-viable minimum is 15 NIFTY / 40
+BANKNIFTY pts ≈ 0.054%/0.065%. The floors sat 3–5× above the real compliance
+floor, so at normal 5m ATR (15–30 pts) most setups were suppressed — the
+dominant emission bottleneck after the PR #38 lifecycle fixes.
 
-**Options for owner:**
-1. Lower SL-% floors (accept tighter stops)
-2. Change SL basis to wider structural stops (prev-bar swing, multi-bar lookback)
-3. Accept selective firing (evaluators only emit in volatile conditions)
+**Decision taken (owner: "loosen first, then do it right one by one"):** option 1
+— floors dropped to ~0.06% (≈ IB11) plus emit-floor 65→55 and VSB volume/OI
+loosened. All env-overridable and independently tunable.
 
-Decision affects ~5 evaluators' real-market emission rates. Must be resolved before the 30-day quality window starts.
+**Tighten-by-quality plan (per-evaluator, driven by 30-day outcome data):**
+- Watch B-tier win rate vs the 55 emit floor → raise back toward 65–70 if noisy.
+- Watch SL-hit rate per evaluator → raise that evaluator's `MIN_SL_PCT` or move
+  it to a wider structural stop (option 2) if it's getting noise-stopped.
+- `EXPIRY_GAMMA_SQUEEZE`, `SR_FLIP` (short-only) are the thinnest — review first.
+
+### `min_scalp_points` is a dead scaffold (flag)
+
+`INSTRUMENTS[*].min_scalp_points` (IB11, 15/40) is declared but consumed
+nowhere — the STT minimum is enforced only implicitly by the `MIN_SL_PCT`
+floors. CLAUDE.md bans scaffolds. Next "do it right" step: wire IB11 as an
+explicit central min-scalp gate (on TP1 distance) with suppression telemetry,
+then the per-evaluator floors become pure quality knobs. Deferred from the
+loosen pass to keep that change reversible/config-only.
 
 ### Signal-firing root causes — FIXED (Session 8, PR pending)
 
@@ -226,4 +242,5 @@ Fyers OAuth access tokens are valid for one trading day. Until the signing-servi
 | 6 | 2026-07-03 | Domain live (Cloudflare Flexible after 521 diagnosis). Fyers token flow debugged end-to-end: redirect-URI mismatch → Cloudflare UA block (#21) → data endpoints under /data/, futures symbol -FF removed, fyers-apiv3 dep (#22). **ENGINE LIVE ON REAL NSE DATA 12:59 IST** — 45 candles seeded/base, WebSocket ticks, scanner OPEN, verified via /api/pulse over HTTPS. Fyers app recreated: QHX93US4FU-100. |
 | 6b | 2026-07-03 (eve) | Broker research: SEBI Feb-2025 circular forces daily token expiry on ALL brokers. One-tap /fyers/callback (#25) replaces Termux ritual after Fyers disabled refresh API (#24). Angel One zero-touch feed shipped default-off (#26). Day-1 review: engine stable 163 scans, 0 signals + 0 suppressions exposed unwired prev-day levels — fixed (#27). Monday is first full-context session. |
 | 7 | 2026-07-05 | Firebase project created (`lumin-india-d887d`). **Engine FCM dispatcher** (PR #33): Firebase Admin SDK push on signal emit, `POST /api/fcm-token`, token storage + auto-cleanup, deploy secret injection. 253 tests. **App Firebase + FCM** (PR #7): `firebase_core` + `firebase_messaging`, `FcmService`, `registerFcmToken()`, `build-apk.yml` patched for google-services. **Ops dashboard** explored — all 5 views already built (Pulse, Signals, Suppressed, Outcomes, Quality), 5 tests, auth working. Signal delivery pipeline end-to-end complete. |
+| 8b | 2026-07-07 | **Loosen pass** — SL-floor tension root-caused (floors 3–5× above IB11) and loosened to ~0.06%; emit-floor 65→55; VSB volume 2.0→1.5, OI gate 0.5→0.0. All config, env-overridable, 273 tests green. Demonstrated LSR emitting at normal ATR (sl% 0.07–0.11, old floor would've suppressed). `min_scalp_points` scaffold flagged. Tighten-by-quality plan recorded. |
 | 8 | 2026-07-07 | **Signal-firing diagnosis + fix** (branch `claude/signal-paths-firing-issue-i1plic`). Owner flagged near-zero signals. Root-caused to intraday-state freeze (circuit gate silencing the day), 60m regime that could never form, stale prev-day levels, weekly-vs-monthly futures expiry, and stale Jan-2026 lot sizes; plus per-direction throughput cap + redundant double gate pass. All fixed with tests (273 passing, ruff+mypy clean). Market reality re-verified via web (NSE Tuesday-expiry regime, lot rebaseline, India VIX range). |
