@@ -270,6 +270,12 @@ class IndiaTickStore:
     def get_day_open(self, symbol: str) -> float:
         return self._day_open.get(symbol, 0.0)
 
+    def get_last_price(self, symbol: str) -> float:
+        """Latest known price — the in-progress 5m bar's close, updated on every
+        tick (0.0 if the symbol has no data yet)."""
+        candles = self.get_candles(symbol, "5m", include_building=True)
+        return candles[-1].close if candles else 0.0
+
     def get_intraday_high(self, symbol: str) -> float:
         return self._intraday_high.get(symbol, 0.0)
 

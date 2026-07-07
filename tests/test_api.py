@@ -286,6 +286,38 @@ async def test_signal_not_found(client):
     assert resp.status_code == 404
 
 
+async def test_signals_live_price_overlay():
+    # LONG NSE:NIFTY26JULFUT entry 24500; live price 24560 -> +60 running points.
+    await insert_signal(_make_signal())
+    set_engine_refs(
+        boot_time=1000.0,
+        scan_count_ref=[0],
+        session_state_ref=["OPEN"],
+        price_provider=lambda: {"NSE:NIFTY26JULFUT": 24560.0},
+    )
+    transport = ASGITransport(app=build_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        listed = (await c.get("/api/signals")).json()
+        detail = (await c.get("/api/signals/sig-001")).json()
+
+    assert listed[0]["current_price"] == 24560.0
+    assert listed[0]["live_points"] == 60.0
+    assert detail["current_price"] == 24560.0
+    assert detail["live_points"] == 60.0
+    set_engine_refs(1000.0, [0], ["CLOSED"])  # reset module globals
+
+
+async def test_signals_no_overlay_without_price():
+    # No price provider (or symbol not live) -> row unchanged, no current_price.
+    await insert_signal(_make_signal())
+    set_engine_refs(1000.0, [0], ["OPEN"], price_provider=lambda: {})
+    transport = ASGITransport(app=build_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        listed = (await c.get("/api/signals")).json()
+    assert "current_price" not in listed[0]
+    set_engine_refs(1000.0, [0], ["CLOSED"])  # reset module globals
+
+
 async def test_signals_filter_tier(client):
     await insert_signal(_make_signal(signal_id="s1", tier="A+", confidence=85.0))
     await insert_signal(_make_signal(signal_id="s2", tier="B", confidence=72.0))

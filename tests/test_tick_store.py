@@ -171,6 +171,14 @@ def test_day_open_is_first_tick() -> None:
     store.on_tick(_SYM, 24050.0, 100.0, _ist(9, 20, 0))
     assert store.get_day_open(_SYM) == 24000.0
 
+def test_last_price_tracks_latest_tick() -> None:
+    store = IndiaTickStore()
+    assert store.get_last_price(_SYM) == 0.0  # no data yet
+    store.on_tick(_SYM, 24000.0, 100.0, _ist(9, 15, 0))
+    store.on_tick(_SYM, 24037.5, 100.0, _ist(9, 16, 0))
+    assert store.get_last_price(_SYM) == 24037.5  # building-bar close = latest
+
+
 def test_intraday_extremes() -> None:
     store = IndiaTickStore()
     store.on_tick(_SYM, 24000.0, 100.0, _ist(9, 15, 0))
