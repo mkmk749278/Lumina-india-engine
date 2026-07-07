@@ -22,6 +22,7 @@ telemetry — CLAUDE.md). Surface via ``/api/india/suppressed`` and ops.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -64,6 +65,12 @@ _CIRCUIT_MOVE_PCT: float = config._safe_float(
 _COOLDOWN_SEC: int = config._safe_int("INDIA_COOLDOWN_SEC", 300)
 _MIN_ATR_POINTS: float = config._safe_float("INDIA_MIN_ATR_POINTS", 3.0)
 _MIN_OI: float = config._safe_float("INDIA_MIN_OI", 100_000.0)
+# Max signals per (base, direction) per day. The per-setup cooldown still
+# spaces repeats; this caps how many distinct same-direction setups can emit
+# on one instrument in a session. 1 meant at most 4 signals/day across both
+# bases — below the 3+/day target once any single setup misfired; 2 gives
+# room for a genuine second same-direction setup without spamming.
+_MAX_PER_DIRECTION: int = config._safe_int("INDIA_MAX_SIGNALS_PER_DIRECTION", 2)
 
 
 # ── Gate result ──────────────────────────────────────────────────────
@@ -87,7 +94,7 @@ class GateChain:
 
     def __init__(self) -> None:
         self._last_fire: dict[str, datetime] = {}
-        self._emitted_today: list[tuple[str, str]] = []
+        self._emitted_today: Counter[tuple[str, str]] = Counter()
         self._suppressions: list[Suppression] = []
 
     def check(
@@ -143,12 +150,36 @@ class GateChain:
 
         return None
 
+    def check_confidence_floor(
+        self,
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        confidence: float,
+        now: datetime,
+    ) -> str | None:
+        """Confidence-floor gate only — the pre-score gates already ran, so the
+        scanner uses this after scoring instead of re-running the whole chain."""
+        reason = self._confidence_floor_gate(confidence)
+        if reason is not None:
+            self._suppressions.append(
+                Suppression(
+                    gate="confidence_floor_gate",
+                    reason=reason,
+                    setup_class=signal.setup_class,
+                    base=ctx.base,
+                    direction=signal.direction,
+                    ts=now,
+                )
+            )
+            return "confidence_floor_gate"
+        return None
+
     def record_emission(
         self, setup_class: str, base: str, direction: str, now: datetime
     ) -> None:
         key = f"{setup_class}:{base}"
         self._last_fire[key] = now
-        self._emitted_today.append((base, direction))
+        self._emitted_today[(base, direction)] += 1
 
     def reset_day(self) -> None:
         self._last_fire.clear()
@@ -254,9 +285,12 @@ class GateChain:
         session_state: SessionState,
         now: datetime,
     ) -> str | None:
-        pair = (ctx.base, signal.direction)
-        if pair in self._emitted_today:
-            return f"already emitted {signal.direction} on {ctx.base} today"
+        count = self._emitted_today[(ctx.base, signal.direction)]
+        if count >= _MAX_PER_DIRECTION:
+            return (
+                f"{signal.direction} on {ctx.base} already emitted {count}x today"
+                f" (cap {_MAX_PER_DIRECTION})"
+            )
         return None
 
     @staticmethod
@@ -371,19 +405,15 @@ class IndiaScanner:
                 candidate.confidence = confidence
                 candidate.tier = tier_for(confidence)
 
-                post_gate = self._gates.check(
-                    candidate,
-                    ctx,
-                    session_state,
-                    now,
-                    confidence=confidence,
+                floor_gate = self._gates.check_confidence_floor(
+                    candidate, ctx, confidence, now
                 )
-                if post_gate is not None:
+                if floor_gate is not None:
                     logger.debug(
                         "suppressed {} on {} by {} (confidence {:.0f})",
                         candidate.setup_class,
                         base,
-                        post_gate,
+                        floor_gate,
                         confidence,
                     )
                     continue
@@ -392,7 +422,7 @@ class IndiaScanner:
                 candidate.regime_daily = ctx.regime_daily
                 candidate.atr_at_entry = ctx.atr14_5m
                 candidate.vix_at_entry = ctx.india_vix
-                candidate.expiry_date = self._expiry.get_expiry_date(now)
+                candidate.expiry_date = self._expiry.get_contract_expiry_date(now)
                 candidate.days_to_expiry = self._expiry.days_to_expiry(now)
 
                 self._gates.record_emission(

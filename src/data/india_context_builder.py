@@ -66,7 +66,7 @@ class IndiaContextBuilder:
         ist_now = now.astimezone(IST) if now.tzinfo else IST.localize(now)
         scan_time = ist_now.timetz()
 
-        is_expiry = self._expiry.is_expiry_day(ist_now)
+        is_expiry = self._expiry.is_weekly_expiry_day(ist_now)
 
         return IndiaContext(
             base=base,

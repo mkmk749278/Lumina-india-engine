@@ -96,10 +96,11 @@ MARKET_CLOSE: time = _safe_time("INDIA_MARKET_CLOSE", time(15, 30))
 EXPIRY_FORCE_CLOSE_TIME: time = _safe_time("INDIA_EXPIRY_FORCE_CLOSE", time(15, 20))
 
 # --- expiry --------------------------------------------------------------
-# Weekly index expiry weekday (Mon=0 .. Sun=6); Tuesday per OWNER_BRIEF.
-# NOTE (owner): the handover treats NIFTY/BANKNIFTY *futures* as weekly-Tuesday.
-# NSE index *futures* are conventionally monthly; weekly cycles are an options
-# construct. Flagged for reconciliation — kept configurable in the meantime.
+# NSE expiry weekday (Mon=0 .. Sun=6). Since the SEBI-driven 1-Sep-2025 revision
+# every NSE equity-derivative contract expires on a TUESDAY: weekly options each
+# Tuesday, monthly futures/options on the *last* Tuesday of the contract month.
+# ExpiryManager derives the monthly futures expiry (the traded instrument) from
+# this weekday and the weekly-expiry flag (gamma-squeeze / IB16) separately.
 EXPIRY_WEEKDAY: int = _safe_int("INDIA_EXPIRY_WEEKDAY", 1)
 # Hour (IST) at/after which an expiry-day contract is treated as rolled to next.
 EXPIRY_ROLL_HOUR: int = _safe_int("INDIA_EXPIRY_ROLL_HOUR", 9)
@@ -122,17 +123,22 @@ class Instrument:
 
 
 # Lot sizes are NSE-mandated and revised periodically — verify at bootstrap
-# (OWNER_BRIEF IB9). Defaults follow the operating docs (NIFTY 75, BANKNIFTY 35);
-# the v2 spec's 65/30 is stale. min_scalp_points per OWNER_BRIEF IB11
-# (15 NIFTY / 40 BANKNIFTY, covering round-trip STT + brokerage).
+# (OWNER_BRIEF IB9). NSE rebaselined index-derivative lot sizes with the
+# January 2026 series (circular FAOP70616): NIFTY 75 -> 65, BANKNIFTY 35 -> 30,
+# to keep contract value aligned with elevated index levels. These are the
+# live values as of the Jan-2026 monthly series; env-overridable so the next
+# revision is a config change, not a code change. min_scalp_points per
+# OWNER_BRIEF IB11 (15 NIFTY / 40 BANKNIFTY, covering round-trip STT + brokerage).
+# expiry_type is "monthly": NSE index *futures* are monthly contracts (last
+# Tuesday); weekly cadence is an options-only construct (see ExpiryManager).
 INSTRUMENTS: dict[str, Instrument] = {
     "NIFTY": Instrument(
         base="NIFTY",
         exchange="NSE",
         segment="FO",
-        lot_size=_safe_int("NIFTY_LOT_SIZE", 75),
+        lot_size=_safe_int("NIFTY_LOT_SIZE", 65),
         tick_size=_safe_float("NIFTY_TICK_SIZE", 0.05),
-        expiry_type="weekly",
+        expiry_type="monthly",
         min_scalp_points=_safe_int("NIFTY_MIN_SCALP_POINTS", 15),
         round_step=_safe_float("NIFTY_ROUND_STEP", 50.0),
     ),
@@ -140,9 +146,9 @@ INSTRUMENTS: dict[str, Instrument] = {
         base="BANKNIFTY",
         exchange="NSE",
         segment="FO",
-        lot_size=_safe_int("BANKNIFTY_LOT_SIZE", 35),
+        lot_size=_safe_int("BANKNIFTY_LOT_SIZE", 30),
         tick_size=_safe_float("BANKNIFTY_TICK_SIZE", 0.05),
-        expiry_type="weekly",
+        expiry_type="monthly",
         min_scalp_points=_safe_int("BANKNIFTY_MIN_SCALP_POINTS", 40),
         round_step=_safe_float("BANKNIFTY_ROUND_STEP", 100.0),
     ),
