@@ -161,15 +161,30 @@ REGIME_QUIET_ATR_PCT: float = _safe_float("REGIME_QUIET_ATR_PCT", 0.15)
 # --- confidence tiers ----------------------------------------------------
 # Emit floor and A+ cutoff on the 0-100 confidence score (spec §11/§13.1).
 # Below the floor a candidate is FILTERED (no FCM, no DB write).
-CONFIDENCE_EMIT_FLOOR: float = _safe_float("INDIA_CONFIDENCE_EMIT_FLOOR", 65.0)
+# LOOSEN PASS (Session 8b): floor dropped 65 -> 55 to restore signal flow now
+# that the 60m regime forms (so regime/HTF components score honestly). This is
+# the primary quality knob — raise it back toward 65-70 once the 30-day outcome
+# data shows the B-tier win rate. A+ cutoff (80) is unchanged: A+ stays scarce.
+CONFIDENCE_EMIT_FLOOR: float = _safe_float("INDIA_CONFIDENCE_EMIT_FLOOR", 55.0)
 CONFIDENCE_A_PLUS: float = _safe_float("INDIA_CONFIDENCE_A_PLUS", 80.0)
+
+# SL-floor recalibration (LOOSEN PASS, Session 8b) -----------------------
+# Every evaluator's MIN_SL_PCT was 0.15-0.30%, i.e. a 42-84 pt NIFTY stop at
+# ~27,900. But IB11's STT-viable minimum is 15 NIFTY / 40 BANKNIFTY points =
+# ~0.054% / ~0.065%. So the floors sat 3-5x above the actual compliance floor
+# and rejected most setups at normal 5m ATR (15-30 pts) — the documented
+# "SL-floor tension". Floors are dropped to ~0.06% (== IB11, ~17 NIFTY /
+# ~40 BANKNIFTY pts), so a signal still clears STT+brokerage but the geometry
+# is no longer over-constrained. Each stays independently env-overridable so a
+# noisy evaluator can be re-tightened one at a time from the outcome data.
+# (VIX-extreme keeps a wider floor: capitulation stops are naturally large.)
 
 # --- evaluator geometry: LIQUIDITY_SWEEP_REVERSAL (spec §10.1) -----------
 # Each evaluator owns its SL/TP geometry (CLAUDE.md). These are LSR's.
 LSR_SWING_LOOKBACK: int = _safe_int("LSR_SWING_LOOKBACK", 30)
 LSR_VOLUME_MULT: float = _safe_float("LSR_VOLUME_MULT", 1.2)
 LSR_SL_ATR_MULT: float = _safe_float("LSR_SL_ATR_MULT", 0.3)
-LSR_MIN_SL_PCT: float = _safe_float("LSR_MIN_SL_PCT", 0.15)
+LSR_MIN_SL_PCT: float = _safe_float("LSR_MIN_SL_PCT", 0.06)
 LSR_MAX_SL_PCT: float = _safe_float("LSR_MAX_SL_PCT", 1.0)
 LSR_MIN_RR: float = _safe_float("LSR_MIN_RR", 1.5)
 
@@ -178,18 +193,18 @@ ORB_MIN_RANGE_PCT: float = _safe_float("ORB_MIN_RANGE_PCT", 0.10)
 ORB_MAX_RANGE_PCT: float = _safe_float("ORB_MAX_RANGE_PCT", 1.50)
 ORB_ATR_BUFFER_MULT: float = _safe_float("ORB_ATR_BUFFER_MULT", 0.1)
 ORB_VOLUME_MULT: float = _safe_float("ORB_VOLUME_MULT", 1.3)
-ORB_MIN_SL_PCT: float = _safe_float("ORB_MIN_SL_PCT", 0.20)
+ORB_MIN_SL_PCT: float = _safe_float("ORB_MIN_SL_PCT", 0.06)
 ORB_MAX_SL_PCT: float = _safe_float("ORB_MAX_SL_PCT", 1.20)
 ORB_TP_RR: float = _safe_float("ORB_TP_RR", 2.0)
 
 # --- evaluator geometry: VOLUME_SURGE_BREAKOUT / BREAKDOWN_SHORT (§10.4/§10.5)
 BDS_ENABLED: bool = _safe_bool("BDS_ENABLED", True)
 VSB_SWING_LOOKBACK: int = _safe_int("VSB_SWING_LOOKBACK", 20)
-VSB_VOLUME_MULT: float = _safe_float("VSB_VOLUME_MULT", 2.0)
-VSB_OI_MIN_PCT: float = _safe_float("VSB_OI_MIN_PCT", 0.5)
+VSB_VOLUME_MULT: float = _safe_float("VSB_VOLUME_MULT", 1.5)
+VSB_OI_MIN_PCT: float = _safe_float("VSB_OI_MIN_PCT", 0.0)
 VSB_ENTRY_ATR_MULT: float = _safe_float("VSB_ENTRY_ATR_MULT", 0.05)
 VSB_SL_ATR_MULT: float = _safe_float("VSB_SL_ATR_MULT", 0.3)
-VSB_MIN_SL_PCT: float = _safe_float("VSB_MIN_SL_PCT", 0.15)
+VSB_MIN_SL_PCT: float = _safe_float("VSB_MIN_SL_PCT", 0.06)
 VSB_MAX_SL_PCT: float = _safe_float("VSB_MAX_SL_PCT", 1.0)
 VSB_TP_RR: float = _safe_float("VSB_TP_RR", 2.0)
 
@@ -200,13 +215,13 @@ VIX_EXTREME_HIGH: float = _safe_float("INDIA_VIX_EXTREME_HIGH", 20.0)
 VIX_EXTREME_MIN_DROP_PCT: float = _safe_float("VIX_EXTREME_MIN_DROP_PCT", 1.5)
 VIX_EXTREME_RSI_MAX: float = _safe_float("VIX_EXTREME_RSI_MAX", 35.0)
 VIX_SL_ATR_MULT: float = _safe_float("VIX_SL_ATR_MULT", 0.3)
-VIX_MIN_SL_PCT: float = _safe_float("VIX_MIN_SL_PCT", 0.30)
+VIX_MIN_SL_PCT: float = _safe_float("VIX_MIN_SL_PCT", 0.15)
 VIX_MAX_SL_PCT: float = _safe_float("VIX_MAX_SL_PCT", 1.50)
 
 # --- evaluator geometry: PCR_EXTREME (spec §10.8) -----------------------
 PCR_NEAR_LEVEL_ATR_MULT: float = _safe_float("PCR_NEAR_LEVEL_ATR_MULT", 1.0)
 PCR_SL_ATR_MULT: float = _safe_float("PCR_SL_ATR_MULT", 0.5)
-PCR_MIN_SL_PCT: float = _safe_float("PCR_MIN_SL_PCT", 0.20)
+PCR_MIN_SL_PCT: float = _safe_float("PCR_MIN_SL_PCT", 0.06)
 PCR_MAX_SL_PCT: float = _safe_float("PCR_MAX_SL_PCT", 1.0)
 PCR_MIN_RR: float = _safe_float("PCR_MIN_RR", 1.5)
 
@@ -216,7 +231,7 @@ TPE_RSI_MIN: float = _safe_float("TPE_RSI_MIN", 35.0)
 TPE_RSI_MAX: float = _safe_float("TPE_RSI_MAX", 60.0)
 TPE_SL_ATR_MULT: float = _safe_float("TPE_SL_ATR_MULT", 0.3)
 TPE_MIN_SL_POINTS: float = _safe_float("TPE_MIN_SL_POINTS", 8.0)
-TPE_MIN_SL_PCT: float = _safe_float("TPE_MIN_SL_PCT", 0.15)
+TPE_MIN_SL_PCT: float = _safe_float("TPE_MIN_SL_PCT", 0.06)
 TPE_MAX_SL_PCT: float = _safe_float("TPE_MAX_SL_PCT", 0.80)
 TPE_TP_RR: float = _safe_float("TPE_TP_RR", 2.0)
 
@@ -225,7 +240,7 @@ OIS_OI_SPIKE_PCT: float = _safe_float("OIS_OI_SPIKE_PCT", 3.0)
 OIS_MIN_OI: float = _safe_float("OIS_MIN_OI", 5_000_000.0)
 OIS_NEAR_LEVEL_ATR_MULT: float = _safe_float("OIS_NEAR_LEVEL_ATR_MULT", 1.0)
 OIS_SL_ATR_MULT: float = _safe_float("OIS_SL_ATR_MULT", 0.5)
-OIS_MIN_SL_PCT: float = _safe_float("OIS_MIN_SL_PCT", 0.20)
+OIS_MIN_SL_PCT: float = _safe_float("OIS_MIN_SL_PCT", 0.06)
 OIS_MAX_SL_PCT: float = _safe_float("OIS_MAX_SL_PCT", 1.0)
 OIS_MIN_RR: float = _safe_float("OIS_MIN_RR", 1.5)
 
@@ -235,21 +250,21 @@ SRF_SHORT_ENABLED: bool = _safe_bool("SR_FLIP_SHORT_ENABLED", True)
 SRF_FLIP_ATR_MULT: float = _safe_float("SRF_FLIP_ATR_MULT", 0.5)
 SRF_RETEST_ATR_MULT: float = _safe_float("SRF_RETEST_ATR_MULT", 0.3)
 SRF_SL_ATR_MULT: float = _safe_float("SRF_SL_ATR_MULT", 0.3)
-SRF_MIN_SL_PCT: float = _safe_float("SRF_MIN_SL_PCT", 0.20)
+SRF_MIN_SL_PCT: float = _safe_float("SRF_MIN_SL_PCT", 0.06)
 SRF_MAX_SL_PCT: float = _safe_float("SRF_MAX_SL_PCT", 1.50)
 SRF_MIN_RR: float = _safe_float("SRF_MIN_RR", 1.5)
 
 # --- evaluator geometry: FAILED_AUCTION_RECLAIM (spec §10.9) -----------
 FAR_VOLUME_MULT: float = _safe_float("FAR_VOLUME_MULT", 1.2)
 FAR_SL_LOOKBACK: int = _safe_int("FAR_SL_LOOKBACK", 3)
-FAR_MIN_SL_PCT: float = _safe_float("FAR_MIN_SL_PCT", 0.15)
+FAR_MIN_SL_PCT: float = _safe_float("FAR_MIN_SL_PCT", 0.06)
 FAR_MAX_SL_PCT: float = _safe_float("FAR_MAX_SL_PCT", 1.0)
 FAR_MIN_RR: float = _safe_float("FAR_MIN_RR", 1.5)
 
 # --- evaluator geometry: DIVERGENCE_CONTINUATION (spec §10.10) ----------
 DIV_LOOKBACK: int = _safe_int("DIV_LOOKBACK", 10)
 DIV_SL_ATR_MULT: float = _safe_float("DIV_SL_ATR_MULT", 0.3)
-DIV_MIN_SL_PCT: float = _safe_float("DIV_MIN_SL_PCT", 0.20)
+DIV_MIN_SL_PCT: float = _safe_float("DIV_MIN_SL_PCT", 0.06)
 DIV_MAX_SL_PCT: float = _safe_float("DIV_MAX_SL_PCT", 1.20)
 DIV_MIN_RR: float = _safe_float("DIV_MIN_RR", 1.5)
 
@@ -258,14 +273,14 @@ QCB_BB_SQUEEZE_THRESHOLD: float = _safe_float("QCB_BB_SQUEEZE_THRESHOLD", 0.002)
 QCB_MIN_SQUEEZE_BARS: int = _safe_int("QCB_MIN_SQUEEZE_BARS", 6)
 QCB_VOLUME_MULT: float = _safe_float("QCB_VOLUME_MULT", 1.5)
 QCB_SL_ATR_MULT: float = _safe_float("QCB_SL_ATR_MULT", 0.1)
-QCB_MIN_SL_PCT: float = _safe_float("QCB_MIN_SL_PCT", 0.10)
+QCB_MIN_SL_PCT: float = _safe_float("QCB_MIN_SL_PCT", 0.06)
 QCB_MAX_SL_PCT: float = _safe_float("QCB_MAX_SL_PCT", 0.60)
 QCB_MIN_RR: float = _safe_float("QCB_MIN_RR", 2.0)
 
 # --- evaluator geometry: MA_CROSS_TREND_SHIFT (spec §10.12) ------------
 MAC_VOLUME_MULT: float = _safe_float("MAC_VOLUME_MULT", 1.2)
 MAC_SL_ATR_MULT: float = _safe_float("MAC_SL_ATR_MULT", 0.3)
-MAC_MIN_SL_PCT: float = _safe_float("MAC_MIN_SL_PCT", 0.20)
+MAC_MIN_SL_PCT: float = _safe_float("MAC_MIN_SL_PCT", 0.06)
 MAC_MAX_SL_PCT: float = _safe_float("MAC_MAX_SL_PCT", 1.0)
 MAC_MIN_RR: float = _safe_float("MAC_MIN_RR", 1.5)
 
@@ -274,7 +289,7 @@ EGS_ENABLED: bool = _safe_bool("EXPIRY_GAMMA_SQUEEZE_ENABLED", True)
 EGS_MIN_DISTANCE_PCT: float = _safe_float("EGS_MIN_DISTANCE_PCT", 0.20)
 EGS_MAX_DISTANCE_PCT: float = _safe_float("EGS_MAX_DISTANCE_PCT", 1.0)
 EGS_SL_ATR_MULT: float = _safe_float("EGS_SL_ATR_MULT", 1.0)
-EGS_MIN_SL_PCT: float = _safe_float("EGS_MIN_SL_PCT", 0.20)
+EGS_MIN_SL_PCT: float = _safe_float("EGS_MIN_SL_PCT", 0.06)
 EGS_MAX_SL_PCT: float = _safe_float("EGS_MAX_SL_PCT", 0.80)
 
 # --- data files ----------------------------------------------------------

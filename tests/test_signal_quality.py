@@ -14,8 +14,9 @@ ENGINE = IndiaSignalScoringEngine()
 def test_tier_boundaries() -> None:
     assert tier_for(80.0) == Tier.A_PLUS
     assert tier_for(79.9) == Tier.B
-    assert tier_for(65.0) == Tier.B
-    assert tier_for(64.9) == Tier.FILTERED
+    # Emit floor loosened to 55 (Session 8b) — B spans [55, 80).
+    assert tier_for(55.0) == Tier.B
+    assert tier_for(54.9) == Tier.FILTERED
 
 
 def test_score_is_clamped_0_100() -> None:
