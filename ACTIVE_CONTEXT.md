@@ -157,6 +157,24 @@ loosened. All env-overridable and independently tunable.
   it to a wider structural stop (option 2) if it's getting noise-stopped.
 - `EXPIRY_GAMMA_SQUEEZE`, `SR_FLIP` (short-only) are the thinnest — review first.
 
+### Fyers WebSocket never delivered ticks — FIXED (Session 8c, the real cause)
+
+Live `/api/pulse` on 2026-07-07 showed `feed_connected: true`, `scan_count: 223`,
+`signals_today: 0`, `suppressed_today: 0`, **`data_age_seconds: 6961`** — the
+newest candle was ~2h old (frozen at the session-open seed). The engine was
+scanning static seeded bars every 30s; no live tick ever moved the buffer, so
+no fresh setup could form. This is the true chronic cause of near-zero signals
+(the day-1 "0 signals + 0 suppressions" was the same symptom, misattributed).
+
+Root cause: `FyersDataFeed._start_websocket` created the `FyersDataSocket` and
+called `subscribe()` + `keep_running()` but **never called `connect()`**. In
+fyers-apiv3, `connect()` is what starts `run_forever` (in a background thread)
+and fires `on_connect`; `keep_running()` only spins a keep-alive loop. So the
+socket never opened, `on_connect` never fired (its log line was absent), and no
+ticks arrived. Fix: call `connect()` and issue `subscribe()` from the
+`on_connect` callback (correct SDK lifecycle). Verified against the installed
+SDK source + a regression test.
+
 ### `min_scalp_points` is a dead scaffold (flag)
 
 `INSTRUMENTS[*].min_scalp_points` (IB11, 15/40) is declared but consumed

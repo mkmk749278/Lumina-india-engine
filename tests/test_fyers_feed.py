@@ -344,6 +344,40 @@ async def test_seed_historical_handles_api_error() -> None:
 # ── Start / stop lifecycle ──────────────────────────────────────────────
 
 
+def test_start_websocket_connects_then_subscribes() -> None:
+    """Regression: the feed must call connect() (which opens the socket and
+    fires on_connect) and subscribe from that callback. The old code called
+    subscribe()/keep_running() but never connect(), so the socket never opened
+    and zero live ticks ever arrived."""
+    import fyers_apiv3.FyersWebsocket.data_ws as dw
+
+    feed = _make_feed()
+    feed._client_id = "APP-100"
+    feed._access_token = "tok"
+    feed._symbols = {_BASE: _SYM, "BANKNIFTY": "NSE:BANKNIFTY26JULFUT"}
+
+    state: dict = {"connected": False, "subscribed": None}
+
+    class _FakeSocket:
+        def __init__(self, **kwargs: object) -> None:
+            self._cb = kwargs["on_connect"]
+
+        def connect(self) -> None:
+            state["connected"] = True
+            self._cb()  # SDK invokes on_connect from connect()
+
+        def subscribe(self, symbols: list, data_type: str = "SymbolUpdate") -> None:
+            state["subscribed"] = (symbols, data_type)
+
+    with patch.object(dw, "FyersDataSocket", _FakeSocket):
+        feed._start_websocket()
+
+    assert state["connected"] is True
+    symbols, data_type = state["subscribed"]
+    assert set(symbols) == {_SYM, "NSE:BANKNIFTY26JULFUT", "NSE:INDIAVIX-INDEX"}
+    assert data_type == "SymbolUpdate"
+
+
 async def test_start_and_stop() -> None:
     feed = _make_feed()
 

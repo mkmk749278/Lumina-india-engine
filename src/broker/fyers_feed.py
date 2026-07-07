@@ -93,6 +93,7 @@ class FyersDataFeed:
         self._access_token: str = ""
         self._http: httpx.AsyncClient | None = None
         self._ws: Any = None
+        self._ws_symbols: list[str] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._oi_task: asyncio.Task[None] | None = None
         self._running = False
@@ -279,6 +280,11 @@ class FyersDataFeed:
 
         access_token = f"{self._client_id}:{self._access_token}"
 
+        symbols_list = list(self._symbols.values())
+        if _VIX_SYMBOL not in symbols_list:
+            symbols_list.append(_VIX_SYMBOL)
+        self._ws_symbols = symbols_list
+
         self._ws = data_ws.FyersDataSocket(
             access_token=access_token,
             log_path="",
@@ -291,16 +297,21 @@ class FyersDataFeed:
             on_message=self._on_ws_message,
         )
 
-        symbols_list = list(self._symbols.values())
-        if _VIX_SYMBOL not in symbols_list:
-            symbols_list.append(_VIX_SYMBOL)
-
-        self._ws.subscribe(symbols=symbols_list, data_type="SymbolUpdate")
-        self._ws.keep_running()
-        logger.info("WebSocket started, subscribed to {}", symbols_list)
+        # connect() spawns the WebSocket's run_forever in a background thread
+        # and then fires on_connect. Subscription must happen *after* the socket
+        # is live, so it is issued from the on_connect callback below. The
+        # previous code called subscribe()/keep_running() but never connect(),
+        # so the socket never opened and not a single tick ever arrived — the
+        # engine ran entirely on the static session-open seed.
+        self._ws.connect()
+        logger.info("WebSocket connecting, will subscribe to {}", symbols_list)
 
     def _on_ws_connect(self) -> None:
-        logger.info("WebSocket connected")
+        logger.info("WebSocket connected — subscribing to {}", self._ws_symbols)
+        if self._ws is not None:
+            self._ws.subscribe(
+                symbols=self._ws_symbols, data_type="SymbolUpdate"
+            )
 
     def _on_ws_close(self) -> None:
         logger.warning("WebSocket closed")
