@@ -402,6 +402,7 @@ class PcrExtreme(Evaluator):
     """
 
     setup_class = SetupClass.PCR_EXTREME
+    index_only = True  # market-wide PCR has no per-stock equivalent
 
     def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
         if not self.enabled or len(ctx.candles_5m) < 2 or len(ctx.candles_15m) < 3:
@@ -1255,6 +1256,7 @@ class ExpiryGammaSqueeze(Evaluator):
 
     setup_class = SetupClass.EXPIRY_GAMMA_SQUEEZE
     enabled = config.EGS_ENABLED
+    index_only = True  # keys off index max-pain / weekly options expiry
 
     def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
         if not self.enabled:

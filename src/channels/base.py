@@ -20,6 +20,9 @@ class Evaluator(ABC):
     setup_class: str
     #: Feature flag; the scanner skips disabled evaluators.
     enabled: bool = True
+    #: Index-only setups (market-wide PCR / index max-pain) — the scanner skips
+    #: them for stock bases, which have no equivalent market-wide inputs.
+    index_only: bool = False
 
     @abstractmethod
     def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
