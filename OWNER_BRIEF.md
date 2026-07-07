@@ -36,8 +36,8 @@ CTE speaks up when a direction is technically wrong. Owner makes business calls.
 
 These rules are non-negotiable. Any code that violates them is a bug.
 
-**IB1 — Index futures only at launch.**
-NIFTY and BANKNIFTY near-month (monthly, last-Tuesday) futures only — index futures are monthly contracts, not weekly. No stock F&O, no index options (short delta risk). `ALLOWED_BASES = ["NIFTY", "BANKNIFTY"]` enforced at scanner entry. Expand only with explicit owner decision and architecture review.
+**IB1 — Futures universe (owner-controlled).**
+Near-month (monthly, last-Tuesday) **futures** only — no index options (short delta risk). Original launch scope was NIFTY + BANKNIFTY; **expanded 2026-07-07 (Session 8e, owner-approved)** to index futures (NIFTY, BANKNIFTY, FINNIFTY, NIFTYNXT50) plus a curated set of the most liquid intraday F&O **stocks** (`config.STOCK_BASES`). All env-overridable via `ALLOWED_BASES`; revert to `NIFTY,BANKNIFTY` instantly if needed. Index-only evaluators (PCR_EXTREME, EXPIRY_GAMMA_SQUEEZE) auto-skip stock bases. Per-stock lot size is display-only in Phase 1 and resolves from the broker before Phase-2 execution. Widen further only with explicit owner decision + architecture review.
 
 **IB2 — SEBI compliance is a hard gate on auto-execution.**
 AUTO_EXECUTION_ENABLED must be false until: SEBI RA (Research Analyst) registration complete + NSE algo provider empanelment + NSE_ALGO_ID assigned + Fyers static IP whitelisted. Signal delivery (Phase 1) does not require RA registration. Auto-execution (Phase 2) does.

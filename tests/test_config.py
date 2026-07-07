@@ -10,9 +10,18 @@ def test_auto_execution_hard_off_by_default() -> None:
     assert config.AUTO_EXECUTION_ENABLED is False
 
 
-def test_allowed_bases_index_only() -> None:
-    # OWNER_BRIEF IB1: NIFTY + BANKNIFTY only at launch.
-    assert config.ALLOWED_BASES == ("NIFTY", "BANKNIFTY")
+def test_universe_index_and_stocks() -> None:
+    # Session 8e universe expansion: index futures + curated liquid F&O stocks.
+    assert config.INDEX_BASES[:2] == ("NIFTY", "BANKNIFTY")
+    assert "FINNIFTY" in config.INDEX_BASES
+    assert "RELIANCE" in config.STOCK_BASES
+    assert "HDFCBANK" in config.STOCK_BASES
+    assert len(config.STOCK_BASES) >= 40
+    # ALLOWED_BASES is the union; index bases lead, stocks follow.
+    assert set(config.INDEX_BASES).issubset(set(config.ALLOWED_BASES))
+    assert set(config.STOCK_BASES).issubset(set(config.ALLOWED_BASES))
+    # Stocks are not index bases (drives index-only evaluator gating).
+    assert "RELIANCE" not in config.INDEX_BASES
 
 
 def test_instruments_lot_sizes() -> None:

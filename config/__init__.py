@@ -79,10 +79,42 @@ INDIA_DEV_MODE: bool = _safe_bool("INDIA_DEV_MODE", False)
 AUTO_EXECUTION_ENABLED: bool = _safe_bool("AUTO_EXECUTION_ENABLED", False)
 INDEX_FUTURES_ONLY: bool = _safe_bool("INDEX_FUTURES_ONLY", True)
 
-# Index futures only at launch (OWNER_BRIEF IB1). Guarded at scanner/expiry entry.
+# Scanning universe (Session 8e — universe expansion, owner-approved widening of
+# IB1). Two groups:
+#   * INDEX_BASES — index futures. The index-only evaluators (PCR_EXTREME,
+#     EXPIRY_GAMMA_SQUEEZE, which use market-wide PCR / index max-pain) run only
+#     for these; the scanner skips them for stocks.
+#   * STOCK_BASES — a curated set of the most liquid intraday F&O stocks
+#     (turnover/liquidity chosen). Names only: per-symbol lot size/tick resolve
+#     from the broker and are display-only in Phase 1 (lot shows 0 until a
+#     dynamic-resolution follow-up lands, before Phase-2 execution makes it
+#     money-critical). Stock futures expire monthly on the last Tuesday, same as
+#     index — ExpiryManager already handles the symbol/roll generically.
+# All three are env-overridable so the universe is a config change, not a code one.
+INDEX_BASES: tuple[str, ...] = tuple(
+    b.strip().upper()
+    for b in _safe_str("INDIA_INDEX_BASES", "NIFTY,BANKNIFTY,FINNIFTY,NIFTYNXT50").split(",")
+    if b.strip()
+)
+
+_DEFAULT_STOCK_UNIVERSE = (
+    "RELIANCE,HDFCBANK,ICICIBANK,SBIN,AXISBANK,KOTAKBANK,INFY,TCS,HCLTECH,WIPRO,"
+    "TECHM,LT,TATAMOTORS,TATASTEEL,JSWSTEEL,HINDALCO,VEDL,SAIL,ITC,HINDUNILVR,"
+    "NESTLEIND,BRITANNIA,BAJFINANCE,BAJAJFINSV,MARUTI,EICHERMOT,SUNPHARMA,DRREDDY,"
+    "CIPLA,DIVISLAB,ADANIENT,ADANIPORTS,BHARTIARTL,ONGC,COALINDIA,POWERGRID,NTPC,"
+    "ULTRACEMCO,GRASIM,TITAN,ASIANPAINT,DLF"
+)
+STOCK_BASES: tuple[str, ...] = tuple(
+    b.strip().upper()
+    for b in _safe_str("INDIA_STOCK_BASES", _DEFAULT_STOCK_UNIVERSE).split(",")
+    if b.strip()
+)
+
 ALLOWED_BASES: tuple[str, ...] = tuple(
     b.strip().upper()
-    for b in _safe_str("ALLOWED_BASES", "NIFTY,BANKNIFTY").split(",")
+    for b in _safe_str(
+        "ALLOWED_BASES", ",".join((*INDEX_BASES, *STOCK_BASES))
+    ).split(",")
     if b.strip()
 )
 
@@ -151,6 +183,31 @@ INSTRUMENTS: dict[str, Instrument] = {
         expiry_type="monthly",
         min_scalp_points=_safe_int("BANKNIFTY_MIN_SCALP_POINTS", 40),
         round_step=_safe_float("BANKNIFTY_ROUND_STEP", 100.0),
+    ),
+    # Additional index futures (Session 8e). Lot sizes are the current NSE
+    # values (FinNifty 60, Nifty Next 50 25); env-overridable per the next NSE
+    # revision. Stock instruments are intentionally not enumerated here — their
+    # lot size/tick resolve from the broker (display-only, Phase 1) and unknown
+    # bases fall back to a 0.05 tick, which is correct for all NSE equity.
+    "FINNIFTY": Instrument(
+        base="FINNIFTY",
+        exchange="NSE",
+        segment="FO",
+        lot_size=_safe_int("FINNIFTY_LOT_SIZE", 60),
+        tick_size=_safe_float("FINNIFTY_TICK_SIZE", 0.05),
+        expiry_type="monthly",
+        min_scalp_points=_safe_int("FINNIFTY_MIN_SCALP_POINTS", 15),
+        round_step=_safe_float("FINNIFTY_ROUND_STEP", 50.0),
+    ),
+    "NIFTYNXT50": Instrument(
+        base="NIFTYNXT50",
+        exchange="NSE",
+        segment="FO",
+        lot_size=_safe_int("NIFTYNXT50_LOT_SIZE", 25),
+        tick_size=_safe_float("NIFTYNXT50_TICK_SIZE", 0.05),
+        expiry_type="monthly",
+        min_scalp_points=_safe_int("NIFTYNXT50_MIN_SCALP_POINTS", 30),
+        round_step=_safe_float("NIFTYNXT50_ROUND_STEP", 100.0),
     ),
 }
 
@@ -234,6 +291,7 @@ TPE_MIN_SL_POINTS: float = _safe_float("TPE_MIN_SL_POINTS", 8.0)
 TPE_MIN_SL_PCT: float = _safe_float("TPE_MIN_SL_PCT", 0.06)
 TPE_MAX_SL_PCT: float = _safe_float("TPE_MAX_SL_PCT", 0.80)
 TPE_TP_RR: float = _safe_float("TPE_TP_RR", 2.0)
+TPE_MIN_RR: float = _safe_float("TPE_MIN_RR", 1.5)
 
 # --- evaluator geometry: OI_SPIKE_REVERSAL (spec §10.13) ----------------
 OIS_OI_SPIKE_PCT: float = _safe_float("OIS_OI_SPIKE_PCT", 3.0)

@@ -291,7 +291,7 @@ python -c "from src.session.holiday_manager import HolidayManager; print(Holiday
 - **IST everywhere** — `pytz.timezone('Asia/Kolkata')`. Never use naive datetimes. Store all timestamps as IST-aware.
 - **Lot sizes are non-negotiable** — always trade in whole lots. Current NSE values (Jan-2026 rebaseline, circular FAOP70616): **NIFTY 65 units/lot, BANKNIFTY 30 units/lot** (down from 75/35). Env-overridable (`NIFTY_LOT_SIZE`/`BANKNIFTY_LOT_SIZE`) so the next NSE revision is a config change. Never partial lots.
 - **Index futures are MONTHLY** — NIFTY/BANKNIFTY futures expire on the **last Tuesday** of the contract month (SEBI 1-Sep-2025 revision; formerly last Thursday). There is no weekly future — weekly cadence is options-only. ExpiryManager owns the monthly contract expiry (symbol/roll/days-to-expiry) *and* the weekly-Tuesday flag (gamma-squeeze / IB16), which are distinct.
-- **Index futures only (Phase 1)** — `ALLOWED_BASES = ["NIFTY", "BANKNIFTY"]`. Guard at scanner entry. Any other base raises hard error.
+- **Scanning universe (owner-controlled, IB1)** — `ALLOWED_BASES` = index futures (`INDEX_BASES`: NIFTY, BANKNIFTY, FINNIFTY, NIFTYNXT50) + curated liquid F&O stocks (`STOCK_BASES`), all env-overridable. Guard at scanner/expiry entry; disallowed bases raise a hard error. Index-only evaluators (PCR_EXTREME, EXPIRY_GAMMA_SQUEEZE) skip stock bases. Futures only — no options.
 - **Fyers symbol format** — `NSE:NIFTY26AUGFUT` (Fyers v3 format, no `-FF` suffix). ExpiryManager owns symbol resolution.
 - **STT-aware minimum** — minimum viable scalp: 15 NIFTY points or 40 BANKNIFTY points (covers round-trip STT + brokerage). Signals below this R:R floor are suppressed at confidence floor gate.
 

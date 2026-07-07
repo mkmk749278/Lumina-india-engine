@@ -374,8 +374,14 @@ class IndiaScanner:
                 logger.debug("skip {} — no 5m candles", base)
                 continue
 
+            is_index = base in config.INDEX_BASES
+
             for ev in self._evaluators:
                 if not ev.enabled:
+                    continue
+                # Index-only setups (market-wide PCR / index max-pain) have no
+                # per-stock equivalent — skip them for stock bases.
+                if ev.index_only and not is_index:
                     continue
 
                 try:

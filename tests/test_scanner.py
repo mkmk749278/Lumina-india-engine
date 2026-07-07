@@ -321,6 +321,47 @@ def test_scanner_skips_disabled_evaluator() -> None:
     assert len(signals) == 0
 
 
+class _IndexOnlyEvaluator(_AlwaysLongEvaluator):
+    setup_class = SetupClass.PCR_EXTREME
+    index_only = True
+
+
+def test_scanner_skips_index_only_evaluator_for_stock() -> None:
+    """Index-only setups (PCR / gamma) must not run for stock bases, which have
+    no market-wide PCR / max-pain. The general evaluators still fire."""
+    stock_sym = "NSE:RELIANCE26JULFUT"
+    tick = IndiaTickStore()
+    oi = IndiaOIStore()
+    mkt = IndiaMarketData()
+    expiry = ExpiryManager()
+    candles = [
+        Candle(
+            ts=_ist(9, 15) + timedelta(minutes=i * 5),
+            open=1400.0 + i, high=1405.0 + i, low=1395.0 + i,
+            close=1402.0 + i, volume=1500.0,
+        )
+        for i in range(60)
+    ]
+    tick.seed(stock_sym, candles)
+    mkt.update_vix(15.0)
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+    builder.set_prev_day(stock_sym, high=1450.0, low=1380.0, close=1400.0)
+    scanner = IndiaScanner(
+        builder, SessionManager(), expiry,
+        evaluators=[_IndexOnlyEvaluator(), _AlwaysLongEvaluator()],
+    )
+
+    assert "RELIANCE" in config.ALLOWED_BASES
+    assert "RELIANCE" not in config.INDEX_BASES
+
+    signals = scanner.scan({"RELIANCE": stock_sym}, _ist(11, 0))
+
+    # Only the non-index-only evaluator fired; PCR_EXTREME was skipped.
+    setups = {s.setup_class for s in signals}
+    assert SetupClass.PCR_EXTREME not in setups
+    assert SetupClass.TREND_PULLBACK_EMA in setups
+
+
 def test_scanner_no_signals_from_never_fire() -> None:
     scanner = _make_scanner([_NeverFireEvaluator()])
     signals = scanner.scan({_BASE: _SYM}, _ist(11, 0))
