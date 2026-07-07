@@ -1,11 +1,11 @@
-"""prev_session_levels — previous-session OHLC derivation."""
+"""prev_session_levels — previous-session OHLC derivation; candle aggregation."""
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import config
-from src.broker.history_utils import prev_session_levels
+from src.broker.history_utils import aggregate_candles, prev_session_levels
 from src.market.candle import Candle
 
 
@@ -36,3 +36,42 @@ def test_no_prior_session_returns_none() -> None:
 
 def test_empty_returns_none() -> None:
     assert prev_session_levels([], date(2026, 7, 6)) is None
+
+
+# ── aggregate_candles ────────────────────────────────────────────────
+
+def _seq(n: int) -> list[Candle]:
+    base = config.IST.localize(datetime(2026, 7, 6, 9, 15))
+    return [
+        Candle(
+            ts=base + timedelta(minutes=5 * i),
+            open=100.0 + i,
+            high=102.0 + i,
+            low=99.0 + i,
+            close=101.0 + i,
+            volume=1000.0,
+        )
+        for i in range(n)
+    ]
+
+
+def test_aggregate_60m_groups_twelve_5m_bars() -> None:
+    c5 = _seq(24)  # exactly two 60m bars
+    c60 = aggregate_candles(c5, 60)
+    assert len(c60) == 2
+    assert c60[0].open == c5[0].open
+    assert c60[0].close == c5[11].close
+    assert c60[0].high == max(c.high for c in c5[:12])
+    assert c60[0].volume == sum(c.volume for c in c5[:12])
+
+
+def test_aggregate_drops_incomplete_trailing_bucket() -> None:
+    # 15m aggregation of 7 bars -> two full 15m bars (6 bars), last one dropped.
+    assert len(aggregate_candles(_seq(7), 15)) == 2
+
+
+def test_aggregate_60m_yields_enough_bars_for_regime() -> None:
+    # ~11 trading days of 5m (~825 bars) -> >=56 60m bars so the EMA55 regime
+    # can classify at session open. Guards the seed-window rationale.
+    c60 = aggregate_candles(_seq(825), 60)
+    assert len(c60) >= 56

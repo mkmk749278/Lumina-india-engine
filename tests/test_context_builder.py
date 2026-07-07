@@ -108,3 +108,40 @@ def test_build_volume_averages() -> None:
     ctx = builder.build(_SYM, _BASE, _ist(11, 0))
 
     assert ctx.volume_avg_5m_20 > 0.0
+
+
+def test_regime_60m_forms_from_seeded_htf() -> None:
+    """With enough seeded 60m history the regime classifies a real trend
+    instead of defaulting to RANGING (needs EMA55 -> >=56 bars). Before the
+    seed carried only ~6 60m bars and regime_60m was permanently RANGING."""
+    from src.regime import Regime
+
+    tick = IndiaTickStore()
+    oi = IndiaOIStore()
+    mkt = IndiaMarketData()
+    expiry = ExpiryManager()
+
+    # A steady 60-bar 60m uptrend with ATR% above the QUIET floor.
+    c60 = [
+        Candle(
+            ts=_ist(9, 15) + timedelta(hours=i),
+            open=24000.0 + 40 * i,
+            high=24030.0 + 40 * i,
+            low=23970.0 + 40 * i,
+            close=24000.0 + 40 * i,
+            volume=1000.0,
+        )
+        for i in range(60)
+    ]
+    c5 = [
+        Candle(ts=_ist(9, 15 + 5 * i), open=25000.0, high=25010.0,
+               low=24990.0, close=25000.0, volume=1000.0)
+        for i in range(30)
+    ]
+    tick.seed(_SYM, c5, None, c60)
+
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+    ctx = builder.build(_SYM, _BASE, _ist(11, 0))
+
+    assert len(ctx.candles_60m) >= 56
+    assert ctx.regime_60m == Regime.TRENDING_UP

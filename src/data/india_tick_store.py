@@ -21,6 +21,7 @@ from collections import deque
 from datetime import date, datetime, time
 
 from config import MARKET_OPEN
+from src.broker.history_utils import aggregate_candles
 from src.indicators import atr as compute_atr
 from src.indicators import rolling_mean
 from src.market.candle import Candle, volumes
@@ -304,23 +305,7 @@ class IndiaTickStore:
 
     @staticmethod
     def _aggregate(candles_5m: list[Candle], tf_minutes: int) -> list[Candle]:
-        """Aggregate 5m candles into a higher timeframe."""
+        """Aggregate 5m candles into a higher timeframe (shared helper)."""
         if not candles_5m:
             return []
-        bars_per_htf = tf_minutes // 5
-        result: list[Candle] = []
-        i = 0
-        while i + bars_per_htf <= len(candles_5m):
-            group = candles_5m[i : i + bars_per_htf]
-            result.append(
-                Candle(
-                    ts=group[0].ts,
-                    open=group[0].open,
-                    high=max(c.high for c in group),
-                    low=min(c.low for c in group),
-                    close=group[-1].close,
-                    volume=sum(c.volume for c in group),
-                )
-            )
-            i += bars_per_htf
-        return result
+        return aggregate_candles(candles_5m, tf_minutes)

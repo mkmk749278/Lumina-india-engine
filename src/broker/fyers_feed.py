@@ -29,7 +29,7 @@ from typing import Any
 import httpx
 
 import config
-from src.broker.history_utils import prev_session_levels
+from src.broker.history_utils import aggregate_candles, prev_session_levels
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
@@ -51,7 +51,12 @@ _OI_POLL_INTERVAL = config._safe_int("FYERS_OI_POLL_SEC", 60)
 _VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
 _HISTORY_RESOLUTION = "5"
 _MAX_CANDLES = 500
-_FETCH_WINDOW_HOURS = 96
+# The seed fetch must reach back far enough that the aggregated 60m series has
+# >=56 bars (EMA21/EMA55 regime needs slow+1). ~11 trading days of market hours
+# clears that (11 * 6.5h ~= 71 60m bars) and stays under Fyers' ~1000-candle
+# response cap for 5m (~11 * 75 ~= 825 5m candles). Before this the 60m regime
+# could not form for ~9 trading days after a (re)seed and sat permanently RANGING.
+_FETCH_WINDOW_HOURS = 360
 _RING_SEED_HOURS = 6
 
 _REDACTED = "***REDACTED***"
@@ -147,6 +152,18 @@ class FyersDataFeed:
                 logger.warning("skipping disallowed base {}", base)
         return symbols
 
+    async def refresh_daily(self, now: datetime | None = None) -> None:
+        """Re-derive prev-day levels and re-seed candle buffers for a new day.
+
+        Called at the session-open transition so a container that stays up
+        across days does not keep serving stale prev-day levels (which produce
+        nonsensical far targets) or a stale higher-timeframe regime. No-op if
+        the feed never connected.
+        """
+        if not self._running or self._http is None or not self._symbols:
+            return
+        await self._seed_historical(now or datetime.now(config.IST))
+
     # ── REST: historical seed ───────────────────────────────────────────
 
     async def _seed_historical(self, now: datetime) -> None:
@@ -203,12 +220,21 @@ class FyersDataFeed:
                         *levels,
                     )
 
-                recent = [c for c in candles if c.ts >= ring_cutoff]
-                if recent:
-                    self._tick.seed(symbol, recent)
-                    logger.info(
-                        "seeded {} with {} 5m candles", base, len(recent)
-                    )
+                # 5m ring seeds the recent intraday tail; 15m/60m seed from the
+                # full window so the higher-timeframe regime has real history at
+                # session open (aggregating 60m off the short 5m tail would only
+                # yield a handful of bars).
+                recent = [c for c in candles if c.ts >= ring_cutoff] or candles
+                candles_15m = aggregate_candles(candles, 15)
+                candles_60m = aggregate_candles(candles, 60)
+                self._tick.seed(symbol, recent, candles_15m, candles_60m)
+                logger.info(
+                    "seeded {} with {} 5m / {} 15m / {} 60m candles",
+                    base,
+                    len(recent),
+                    len(candles_15m),
+                    len(candles_60m),
+                )
 
             except httpx.HTTPError:
                 logger.opt(exception=True).warning(
@@ -370,7 +396,9 @@ class FyersDataFeed:
         """
         assert self._http is not None
 
-        expiry = self._expiry.get_expiry_date()
+        # Option chain (max-pain / PCR) keys off the nearest weekly options
+        # expiry, not the monthly futures roll.
+        expiry = self._expiry.get_weekly_expiry_date()
         expiry_epoch = int(
             datetime.combine(expiry, datetime.min.time()).timestamp()
         )
