@@ -1,6 +1,6 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-05 (Session 7)
+**Last updated:** 2026-07-07 (Session 8)
 
 ---
 
@@ -150,6 +150,35 @@ Multiple evaluators (SR_FLIP, FAR, TPE, VSB, PCR) produce SL distances under the
 
 Decision affects ~5 evaluators' real-market emission rates. Must be resolved before the 30-day quality window starts.
 
+### Signal-firing root causes — FIXED (Session 8, PR pending)
+
+Owner reported near-zero signals ("one at 09:15, then nothing"). Deep trace of
+the path/scoring/gates found a cluster of lifecycle + market-reality bugs, all
+fixed this session:
+
+1. **Stale intraday state** — `IndiaTickStore` never reset day-to-day, so
+   `day_open` froze at the first session's open; once price drifted >5% the
+   `circuit_check_gate` silenced every signal all day. Now auto-resets on the
+   first tick of a new IST date.
+2. **60m regime could never form** — EMA55 regime needs ≥56 60m bars; the seed
+   supplied ~6, so `regime_60m` sat permanently RANGING and trend evaluators
+   (TREND_PULLBACK_EMA, MA_CROSS) never fired. Seed window widened to ~11
+   trading days and 15m/60m buffers now seeded directly from the full history.
+3. **Stale prev-day levels** — a long-running Fyers container never re-derived
+   PDH/PDL/PDC (source of the nonsensical 24325 far-target / RR 17.4). Added
+   `feed.refresh_daily()`, called at the session-open transition.
+4. **Expiry treated futures as weekly** — index futures are MONTHLY (last
+   Tuesday). ExpiryManager now separates the monthly contract expiry (symbol,
+   roll, days-to-expiry, card display) from the weekly-Tuesday flag (gamma /
+   IB16). Fixes the card's wrong "Expiry 2026-07-07 (1d)".
+5. **Lot sizes stale** — NSE Jan-2026 rebaseline NIFTY 75→65, BANKNIFTY 35→30.
+6. **Throughput** — `duplicate_direction_gate` capped at 1/direction/day (≤4
+   signals/day, below the 3+/day target). Now configurable
+   (`INDIA_MAX_SIGNALS_PER_DIRECTION`, default 2). Redundant double gate-chain
+   pass per candidate removed.
+
+Owner tuning still open: SL-floor tension (below) and the per-direction cap.
+
 ### Fyers access token expires daily
 
 Fyers OAuth access tokens are valid for one trading day. Until the signing-service daily-refresh automation is built (Phase 2 design), the owner runs `scripts/fyers_token.py` on the VPS each trading morning (PR #19 — exchanges the pasted auth code, verifies against the profile endpoint, writes `.env`, prints the restart command; deploys no longer wipe a VPS-set token). This is the **current blocker for live scanning**.
@@ -197,3 +226,4 @@ Fyers OAuth access tokens are valid for one trading day. Until the signing-servi
 | 6 | 2026-07-03 | Domain live (Cloudflare Flexible after 521 diagnosis). Fyers token flow debugged end-to-end: redirect-URI mismatch → Cloudflare UA block (#21) → data endpoints under /data/, futures symbol -FF removed, fyers-apiv3 dep (#22). **ENGINE LIVE ON REAL NSE DATA 12:59 IST** — 45 candles seeded/base, WebSocket ticks, scanner OPEN, verified via /api/pulse over HTTPS. Fyers app recreated: QHX93US4FU-100. |
 | 6b | 2026-07-03 (eve) | Broker research: SEBI Feb-2025 circular forces daily token expiry on ALL brokers. One-tap /fyers/callback (#25) replaces Termux ritual after Fyers disabled refresh API (#24). Angel One zero-touch feed shipped default-off (#26). Day-1 review: engine stable 163 scans, 0 signals + 0 suppressions exposed unwired prev-day levels — fixed (#27). Monday is first full-context session. |
 | 7 | 2026-07-05 | Firebase project created (`lumin-india-d887d`). **Engine FCM dispatcher** (PR #33): Firebase Admin SDK push on signal emit, `POST /api/fcm-token`, token storage + auto-cleanup, deploy secret injection. 253 tests. **App Firebase + FCM** (PR #7): `firebase_core` + `firebase_messaging`, `FcmService`, `registerFcmToken()`, `build-apk.yml` patched for google-services. **Ops dashboard** explored — all 5 views already built (Pulse, Signals, Suppressed, Outcomes, Quality), 5 tests, auth working. Signal delivery pipeline end-to-end complete. |
+| 8 | 2026-07-07 | **Signal-firing diagnosis + fix** (branch `claude/signal-paths-firing-issue-i1plic`). Owner flagged near-zero signals. Root-caused to intraday-state freeze (circuit gate silencing the day), 60m regime that could never form, stale prev-day levels, weekly-vs-monthly futures expiry, and stale Jan-2026 lot sizes; plus per-direction throughput cap + redundant double gate pass. All fixed with tests (273 passing, ruff+mypy clean). Market reality re-verified via web (NSE Tuesday-expiry regime, lot rebaseline, India VIX range). |

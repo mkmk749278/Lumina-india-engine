@@ -18,9 +18,10 @@ hot path (per-tick, per-scan).
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 from config import MARKET_OPEN
+from src.broker.history_utils import aggregate_candles
 from src.indicators import atr as compute_atr
 from src.indicators import rolling_mean
 from src.market.candle import Candle, volumes
@@ -86,6 +87,14 @@ class IndiaTickStore:
         self._or_high: dict[str, float] = {}
         self._or_low: dict[str, float] = {}
         self._or_locked: set[str] = set()
+
+        # IST date the current intraday state belongs to. The first tick of a
+        # new trading day auto-clears day_open / opening range / intraday
+        # extremes so they never carry over from a prior session (the store is
+        # a long-lived, process-scoped object — a stale day_open silently trips
+        # the scanner's circuit gate and freezes the opening range for every
+        # evaluator downstream).
+        self._state_date: date | None = None
 
     # ------------------------------------------------------------------
     # Init
@@ -154,6 +163,16 @@ class IndiaTickStore:
         The Fyers WebSocket client computes volume deltas before calling this.
         """
         self._ensure_symbol(symbol)
+
+        tick_date = ts.date()
+        if self._state_date is None:
+            self._state_date = tick_date
+        elif tick_date != self._state_date:
+            # New trading day — drop yesterday's intraday state before this
+            # tick seeds today's day_open / opening range. Candle ring buffers
+            # are preserved (reset_day keeps them) for indicator continuity.
+            self.reset_day()
+            self._state_date = tick_date
 
         if symbol not in self._day_open:
             self._day_open[symbol] = price
@@ -286,23 +305,7 @@ class IndiaTickStore:
 
     @staticmethod
     def _aggregate(candles_5m: list[Candle], tf_minutes: int) -> list[Candle]:
-        """Aggregate 5m candles into a higher timeframe."""
+        """Aggregate 5m candles into a higher timeframe (shared helper)."""
         if not candles_5m:
             return []
-        bars_per_htf = tf_minutes // 5
-        result: list[Candle] = []
-        i = 0
-        while i + bars_per_htf <= len(candles_5m):
-            group = candles_5m[i : i + bars_per_htf]
-            result.append(
-                Candle(
-                    ts=group[0].ts,
-                    open=group[0].open,
-                    high=max(c.high for c in group),
-                    low=min(c.low for c in group),
-                    close=group[-1].close,
-                    volume=sum(c.volume for c in group),
-                )
-            )
-            i += bars_per_htf
-        return result
+        return aggregate_candles(candles_5m, tf_minutes)

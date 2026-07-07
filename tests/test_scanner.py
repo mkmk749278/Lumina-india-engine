@@ -11,7 +11,7 @@ from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
 from src.market.candle import Candle
-from src.scanner import GateChain, IndiaScanner
+from src.scanner import _MAX_PER_DIRECTION, GateChain, IndiaScanner
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
 from src.signals.model import Direction, IndiaContext, IndiaSignal, SetupClass, Tier
@@ -144,18 +144,37 @@ def test_oi_liquidity_gate_passes_zero_oi() -> None:
     assert result is None
 
 
-def test_duplicate_direction_gate_suppresses() -> None:
+def test_duplicate_direction_gate_suppresses_at_cap() -> None:
     chain = GateChain()
     sig = make_signal(direction=Direction.LONG)
     ctx = make_context(base=_BASE, atr14_5m=10.0)
     now = _ist(10, 0)
 
-    chain.record_emission(SetupClass.VOLUME_SURGE_BREAKOUT, _BASE, Direction.LONG, now)
+    # Fill the per-(base, direction) daily cap; the next same-direction
+    # candidate is then suppressed.
+    for _ in range(_MAX_PER_DIRECTION):
+        chain.record_emission(
+            SetupClass.VOLUME_SURGE_BREAKOUT, _BASE, Direction.LONG, now
+        )
 
     result = chain.check(
         sig, ctx, SessionState.OPEN, now + timedelta(seconds=600)
     )
     assert result == "duplicate_direction_gate"
+
+
+def test_duplicate_direction_gate_allows_below_cap() -> None:
+    chain = GateChain()
+    sig = make_signal(direction=Direction.LONG)
+    ctx = make_context(base=_BASE, atr14_5m=10.0)
+    now = _ist(10, 0)
+
+    # One emission is below the default cap of 2 — a second same-direction
+    # setup may still fire (spaced by its own per-setup cooldown).
+    chain.record_emission(SetupClass.OPENING_RANGE_BREAKOUT, _BASE, Direction.LONG, now)
+
+    result = chain.check(sig, ctx, SessionState.OPEN, now + timedelta(seconds=600))
+    assert result != "duplicate_direction_gate"
 
 
 def test_duplicate_direction_gate_passes_different_direction() -> None:

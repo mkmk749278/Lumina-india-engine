@@ -12,10 +12,10 @@ This system is the Indian market complement to the Lumin crypto signals platform
 
 **NSE F&O context (mandatory reading for every AI session):**
 - NSE is the world's largest derivatives exchange by contract count
-- NIFTY 50 (lot size: 75 units) and BANKNIFTY (lot size: 35 units) are index futures — no physical settlement risk
+- NIFTY 50 and BANKNIFTY index **futures** — no physical settlement risk. Lot sizes (Jan-2026 NSE rebaseline, circular FAOP70616): **NIFTY 65, BANKNIFTY 30** (revised down from 75/35 to realign contract value with elevated index levels).
 - Trading hours: 09:15–15:30 IST, Monday–Friday only
-- Weekly expiry: NIFTY and BANKNIFTY expire every Tuesday (near-weekly contract is the primary trading instrument)
-- STT (Securities Transaction Tax) on sell side: 0.05% of notional (April 2026 hike). On 1 NIFTY lot at ₹24,000 index: ₹900 per trade. This sets a minimum viable scalp of 15 NIFTY points.
+- Expiry (SEBI 1-Sep-2025 revision — all NSE equity derivatives moved to Tuesday): **weekly options** expire every Tuesday; **monthly futures/options** expire on the **last Tuesday** of the month. The traded instrument is the monthly future (there is no weekly future). BANKNIFTY weekly options were discontinued (Nov-2024); BANKNIFTY is monthly-only.
+- STT (Securities Transaction Tax) on sell side: 0.05% of notional (April 2026 hike). On 1 NIFTY lot at ₹24,000 index: ₹780 per trade (65-unit lot). This sets a minimum viable scalp of 15 NIFTY points.
 - India VIX: NSE-published volatility index. Above 20 = elevated, above 25 = extreme. Gate on extremes.
 - PCR (Put-Call Ratio): market-wide option sentiment. Below 0.7 = extreme bearish, above 1.3 = extreme bullish.
 
@@ -37,7 +37,7 @@ CTE speaks up when a direction is technically wrong. Owner makes business calls.
 These rules are non-negotiable. Any code that violates them is a bug.
 
 **IB1 — Index futures only at launch.**
-NIFTY and BANKNIFTY weekly near-expiry contracts only. No stock F&O, no index options (short delta risk). `ALLOWED_BASES = ["NIFTY", "BANKNIFTY"]` enforced at scanner entry. Expand only with explicit owner decision and architecture review.
+NIFTY and BANKNIFTY near-month (monthly, last-Tuesday) futures only — index futures are monthly contracts, not weekly. No stock F&O, no index options (short delta risk). `ALLOWED_BASES = ["NIFTY", "BANKNIFTY"]` enforced at scanner entry. Expand only with explicit owner decision and architecture review.
 
 **IB2 — SEBI compliance is a hard gate on auto-execution.**
 AUTO_EXECUTION_ENABLED must be false until: SEBI RA (Research Analyst) registration complete + NSE algo provider empanelment + NSE_ALGO_ID assigned + Fyers static IP whitelisted. Signal delivery (Phase 1) does not require RA registration. Auto-execution (Phase 2) does.
@@ -67,7 +67,7 @@ MAX_INDIA_DAILY_LOSS_INR      = 15,000    (₹15,000)
 Daily loss cap triggers an automatic session kill switch. Tripwires enforce all caps. No override.
 
 **IB9 — Whole lots only.**
-Always trade in whole lots. NIFTY: 75 units/lot. BANKNIFTY: 35 units/lot. Never partial lots. NSE enforces this; we validate before order placement.
+Always trade in whole lots. Current NSE lot sizes (Jan-2026 rebaseline): NIFTY 65 units/lot, BANKNIFTY 30 units/lot (were 75/35). Never partial lots. NSE enforces this and revises periodically — lot size is env-overridable (`NIFTY_LOT_SIZE`/`BANKNIFTY_LOT_SIZE`); we validate before order placement.
 
 **IB10 — Signal quality gate before Phase 2.**
 Minimum 30 trading days of live Phase 1 signal data must be reviewed by owner before Phase 2 (auto-execution) is considered. Owner explicit sign-off required to flip AUTO_EXECUTION_ENABLED=true. CTE presents the data; owner decides.

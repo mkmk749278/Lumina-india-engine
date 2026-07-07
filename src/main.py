@@ -180,6 +180,17 @@ async def _run() -> None:
                 ):
                     scanner.reset_day()
                     persisted_suppressions = 0
+                    # On a genuine daily open (not the first boot — start()
+                    # already seeded then), re-derive prev-day levels and
+                    # re-seed the higher-timeframe buffers so a long-running
+                    # container never serves stale levels or a frozen regime.
+                    if prev_state == SessionState.PRE_OPEN and feed_active[0]:
+                        try:
+                            await feed.refresh_daily(now)
+                        except Exception:
+                            logger.opt(exception=True).warning(
+                                "daily feed refresh failed"
+                            )
                 if state == SessionState.CLOSED and prev_state is not None:
                     for oc in monitor.force_close_all(now):
                         await insert_outcome(

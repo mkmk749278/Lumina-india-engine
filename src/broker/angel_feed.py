@@ -27,7 +27,7 @@ from datetime import time as dt_time
 from typing import Any
 
 import config
-from src.broker.history_utils import prev_session_levels
+from src.broker.history_utils import aggregate_candles, prev_session_levels
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
@@ -38,7 +38,9 @@ from src.utils import get_logger
 logger = get_logger("angel_feed")
 
 _RELOGIN_TIME = config._safe_time("ANGEL_RELOGIN_TIME", dt_time(8, 40))
-_FETCH_WINDOW_HOURS = 96
+# Reach back ~11 trading days so the aggregated 60m series has >=56 bars for the
+# EMA regime (see FyersDataFeed for the full rationale).
+_FETCH_WINDOW_HOURS = 360
 _RING_SEED_HOURS = 6
 _EXCHANGE_NFO = 2  # SmartWebSocketV2 exchangeType
 _EXCHANGE_NSE = 1
@@ -125,6 +127,18 @@ class AngelDataFeed:
             self._relogin_task.cancel()
         self._close_ws()
         logger.info("angel data feed stopped")
+
+    async def refresh_daily(self, now: datetime | None = None) -> None:
+        """Re-derive prev-day levels and re-seed candle buffers for a new day.
+
+        Mirrors ``FyersDataFeed.refresh_daily`` so the engine's session-open
+        transition refreshes either feed uniformly. The nightly re-login loop
+        also re-seeds; this covers days where the process stays authenticated
+        and never re-logs in. No-op if no symbols are resolved yet.
+        """
+        if not self._running or not self._symbols:
+            return
+        await asyncio.to_thread(self._seed_historical)
 
     # ── Auth ────────────────────────────────────────────────────────────
 
@@ -284,10 +298,17 @@ class AngelDataFeed:
                         *levels,
                     )
 
-                recent = [c for c in candles if c.ts >= ring_cutoff]
-                if recent:
-                    self._tick.seed(tradingsymbol, recent)
-                    logger.info("seeded {} with {} 5m candles", base, len(recent))
+                recent = [c for c in candles if c.ts >= ring_cutoff] or candles
+                candles_15m = aggregate_candles(candles, 15)
+                candles_60m = aggregate_candles(candles, 60)
+                self._tick.seed(tradingsymbol, recent, candles_15m, candles_60m)
+                logger.info(
+                    "seeded {} with {} 5m / {} 15m / {} 60m candles",
+                    base,
+                    len(recent),
+                    len(candles_15m),
+                    len(candles_60m),
+                )
             except Exception:
                 logger.opt(exception=True).warning("historical seed failed for {}", base)
 

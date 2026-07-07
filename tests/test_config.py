@@ -16,8 +16,9 @@ def test_allowed_bases_index_only() -> None:
 
 
 def test_instruments_lot_sizes() -> None:
-    assert config.INSTRUMENTS["NIFTY"].lot_size == 75
-    assert config.INSTRUMENTS["BANKNIFTY"].lot_size == 35
+    # NSE Jan-2026 rebaseline (circular FAOP70616): NIFTY 75->65, BANKNIFTY 35->30.
+    assert config.INSTRUMENTS["NIFTY"].lot_size == 65
+    assert config.INSTRUMENTS["BANKNIFTY"].lot_size == 30
 
 
 def test_instrument_round_steps() -> None:

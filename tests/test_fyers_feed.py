@@ -265,6 +265,63 @@ async def test_seed_historical_populates_tick_store() -> None:
     assert len(candles) == 2
 
 
+async def test_seed_historical_seeds_higher_timeframes() -> None:
+    """The seed must populate 15m/60m buffers from the full history so the
+    higher-timeframe regime can form at session open."""
+    feed = _make_feed()
+    feed._symbols = {_BASE: _SYM}
+
+    now = _ist(12, 0)
+    epoch = int(now.timestamp())
+    # 24 consecutive 5m candles -> eight 15m bars, two 60m bars.
+    candle_data = [
+        [
+            epoch - (24 - i) * 300,
+            24000.0 + i, 24010.0 + i, 23990.0 + i, 24005.0 + i, 1000.0,
+        ]
+        for i in range(24)
+    ]
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"s": "ok", "candles": candle_data}
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    feed._http = mock_client
+
+    await feed._seed_historical(now)
+
+    assert len(feed._tick.get_candles_15m(_SYM)) == 8
+    assert len(feed._tick.get_candles_60m(_SYM)) == 2
+
+
+async def test_refresh_daily_reseeds_when_running() -> None:
+    feed = _make_feed()
+    feed._symbols = {_BASE: _SYM}
+    feed._running = True
+
+    now = _ist(9, 20)
+    epoch = int(now.timestamp())
+    candle_data = [[epoch - 300, 24000.0, 24010.0, 23990.0, 24005.0, 1000.0]]
+
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"s": "ok", "candles": candle_data}
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    feed._http = mock_client
+
+    await feed.refresh_daily(now)
+    assert len(feed._tick.get_candles_5m(_SYM)) == 1
+
+
+async def test_refresh_daily_noop_when_not_connected() -> None:
+    feed = _make_feed()  # not running, no http, no symbols
+    await feed.refresh_daily(_ist(9, 15))  # must not raise
+
+
 async def test_seed_historical_handles_api_error() -> None:
     feed = _make_feed()
     feed._symbols = {_BASE: _SYM}

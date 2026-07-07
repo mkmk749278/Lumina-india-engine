@@ -36,7 +36,7 @@ def test_long_sweep_reclaim_emits_signal() -> None:
     assert sig.sl < sig.entry < sig.tp1
     assert sig.rr_ratio >= 1.5
     assert sig.htf_trend_aligned is True  # RANGING is aligned for a reversal long
-    assert sig.lot_size == 75
+    assert sig.lot_size == 65  # NSE Jan-2026 rebaseline
 
 
 def test_short_sweep_reclaim_emits_signal() -> None:
