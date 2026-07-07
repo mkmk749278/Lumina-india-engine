@@ -57,7 +57,25 @@ _boot_time: float = 0.0
 _scan_count_ref: list[int] | None = None
 _session_state_ref: list[str] | None = None
 _status_provider: Callable[[], dict] | None = None
+_price_provider: Callable[[], dict[str, float]] | None = None
 _token_refresh_cb: Callable[[str], Awaitable[None]] | None = None
+
+
+def _with_live(row: dict, prices: dict[str, float]) -> dict:
+    """Overlay the current price + running points onto a signal row.
+
+    ``live_points`` is signed from the subscriber's perspective (LONG:
+    price − entry, SHORT: entry − price). Only added when a live price
+    exists for the signal's symbol (i.e. the current-contract, market-open
+    case); otherwise the row is returned unchanged.
+    """
+    price = prices.get(str(row.get("symbol", "")), 0.0)
+    if price <= 0:
+        return row
+    entry = float(row.get("entry", 0) or 0)
+    direction = str(row.get("direction", ""))
+    points = (price - entry) if direction == "LONG" else (entry - price)
+    return {**row, "current_price": price, "live_points": round(points, 1)}
 
 
 def set_token_refresh_callback(cb: Callable[[str], Awaitable[None]]) -> None:
@@ -262,16 +280,19 @@ def build_app() -> FastAPI:
         setup_class: str | None = Query(None, description="Filter by setup class"),
         limit: int = Query(50, ge=1, le=200),
     ) -> list[dict]:
-        return await signal_store.get_signals(
+        rows = await signal_store.get_signals(
             date=date, tier=tier, setup_class=setup_class, limit=limit
         )
+        prices = _price_provider() if _price_provider else {}
+        return [_with_live(r, prices) for r in rows]
 
     @app.get("/api/signals/{signal_id}", dependencies=[Depends(_check_token)])
     async def signal_detail(signal_id: str) -> dict:
         result = await signal_store.get_signal_by_id(signal_id)
         if result is None:
             raise HTTPException(status_code=404, detail="Signal not found")
-        return result
+        prices = _price_provider() if _price_provider else {}
+        return _with_live(result, prices)
 
     @app.get("/api/suppressed", dependencies=[Depends(_check_token)])
     async def suppressed(
@@ -377,18 +398,23 @@ def set_engine_refs(
     scan_count_ref: list[int],
     session_state_ref: list[str],
     status_provider: Callable[[], dict] | None = None,
+    price_provider: Callable[[], dict[str, float]] | None = None,
 ) -> None:
-    """Wire live engine state into the API for the /pulse endpoint.
+    """Wire live engine state into the API.
 
     ``status_provider`` returns feed/data diagnostics (connected, symbols,
     data age, suppressed-today) so /pulse can distinguish a dead feed from a
-    quiet market. Optional so tests can wire refs without a live feed.
+    quiet market. ``price_provider`` returns {symbol: last_price} so /signals
+    can overlay each signal's current price + running points. Both optional so
+    tests can wire refs without a live feed.
     """
-    global _boot_time, _scan_count_ref, _session_state_ref, _status_provider
+    global _boot_time, _scan_count_ref, _session_state_ref
+    global _status_provider, _price_provider
     _boot_time = boot_time
     _scan_count_ref = scan_count_ref
     _session_state_ref = session_state_ref
     _status_provider = status_provider
+    _price_provider = price_provider
 
 
 async def serve_api(app: FastAPI, port: int = 8000) -> None:

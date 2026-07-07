@@ -160,9 +160,23 @@ async def _run() -> None:
             "suppressed_today": len(scanner.gates.suppressions),
         }
 
+    def _live_prices() -> dict[str, float]:
+        """Latest price per active symbol, for the /api/signals live overlay."""
+        symbols = feed.symbols if feed_active[0] else {}
+        prices: dict[str, float] = {}
+        for sym in symbols.values():
+            price = tick.get_last_price(sym)
+            if price > 0:
+                prices[sym] = price
+        return prices
+
     app = build_app()
     set_engine_refs(
-        boot_time, scan_count_ref, session_state_ref, _engine_status
+        boot_time,
+        scan_count_ref,
+        session_state_ref,
+        _engine_status,
+        _live_prices,
     )
     api_task = asyncio.create_task(serve_api(app, _API_PORT))
 
