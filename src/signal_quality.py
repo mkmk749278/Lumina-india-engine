@@ -121,18 +121,30 @@ class IndiaSignalScoringEngine:
 
     @staticmethod
     def _score_rr(signal: IndiaSignal) -> float:
-        rr = signal.rr_ratio
-        if rr >= 3.0:
-            return 15.0
-        if rr >= 2.5:
-            return 13.0
+        # Score the reward the subscriber actually keeps, not the gross target.
+        # A scalp that clears STT but nets ~nothing is not a 2R trade. After the
+        # Apr-2026 STT hike (futures sell-side 0.02% -> 0.05%) the all-in
+        # round-trip cost is ~0.06% of notional — material on a scalp — so net
+        # R:R = (target - cost) / (stop + cost). This favours cost-efficient,
+        # larger-target setups over thin scalps with the same gross R:R.
+        # signal.rr_ratio stays gross (geometry/display contract unchanged); the
+        # bands below are recentred for net R:R (a net 1.3 is a genuinely good
+        # post-cost trade). See config.round_trip_cost_points.
+        cost = config.round_trip_cost_points(signal.entry)
+        net_reward = abs(signal.tp1 - signal.entry) - cost
+        net_risk = abs(signal.entry - signal.sl) + cost
+        rr = net_reward / net_risk if net_risk > 0 else 0.0
         if rr >= 2.0:
+            return 15.0
+        if rr >= 1.6:
+            return 13.0
+        if rr >= 1.3:
             return 11.0
-        if rr >= 1.8:
+        if rr >= 1.0:
             return 9.0
-        if rr >= 1.5:
-            return 7.0
-        return 4.0
+        if rr >= 0.7:
+            return 6.0
+        return 3.0
 
     @staticmethod
     def _score_level_confluence(signal: IndiaSignal, ctx: IndiaContext) -> float:

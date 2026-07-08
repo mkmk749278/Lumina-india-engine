@@ -91,3 +91,19 @@ def test_pcr_contrarian_bonus() -> None:
     without = ENGINE._score_vix_pcr(long_signal, make_context())
     assert with_bonus == 8.0
     assert without == 5.0
+
+
+def test_rr_score_is_net_of_round_trip_cost() -> None:
+    # Two NIFTY longs with the SAME gross 2:1 geometry but different absolute
+    # size. After the ~14-pt round-trip cost the fat-target trade keeps far more
+    # net edge, so it must out-score the thin scalp the gross ratio calls equal.
+    thin = make_signal(entry=24000.0, sl=24000.0 - 10.0, tp1=24000.0 + 20.0)
+    fat = make_signal(entry=24000.0, sl=24000.0 - 60.0, tp1=24000.0 + 120.0)
+    assert ENGINE._score_rr(fat) > ENGINE._score_rr(thin)
+
+
+def test_rr_score_floors_a_break_even_scalp() -> None:
+    # TP1 a hair above the round-trip cost -> net reward ~0 -> lowest RR band.
+    cost = config.round_trip_cost_points(24000.0)
+    barely = make_signal(entry=24000.0, sl=24000.0 - 20.0, tp1=24000.0 + cost + 1.0)
+    assert ENGINE._score_rr(barely) == 3.0

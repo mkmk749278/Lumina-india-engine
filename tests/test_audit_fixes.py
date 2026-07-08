@@ -121,10 +121,21 @@ def test_min_scalp_gate_passes_viable_index_target() -> None:
 
 
 def test_min_scalp_points_for_stock_scales_by_price() -> None:
-    # 0.10% of a ₹500 stock = 0.5 points.
+    # 0.10% of a ₹500 stock = 0.5 points; cost floor (0.06%*1.5 = 0.45) is below
+    # it, so the price-relative floor wins for stocks.
     assert config.min_scalp_points_for("RELIANCE", 500.0) == 0.5
-    assert config.min_scalp_points_for("NIFTY", 24000.0) == 15.0
-    assert config.min_scalp_points_for("BANKNIFTY", 52000.0) == 40.0
+
+
+def test_min_scalp_floor_tracks_round_trip_cost() -> None:
+    # Post Apr-2026 STT hike the cost floor lifts the index minimums above their
+    # legacy absolutes: at NIFTY 24,000 the round-trip cost is ~14.4 pts and the
+    # floor is cost * MIN_SCALP_COST_MULT (1.5) = 21.6, above the 15-pt absolute.
+    assert config.round_trip_cost_points(24000.0) == 24000.0 * 0.06 / 100.0
+    nifty_floor = config.min_scalp_points_for("NIFTY", 24000.0)
+    assert nifty_floor == config.round_trip_cost_points(24000.0) * config.MIN_SCALP_COST_MULT
+    assert nifty_floor > config.INSTRUMENTS["NIFTY"].min_scalp_points
+    # BANKNIFTY at 52,000: cost ~31.2, floor ~46.8, above the 40-pt absolute.
+    assert config.min_scalp_points_for("BANKNIFTY", 52000.0) > 40.0
 
 
 # ── Stock-scaled thresholds ─────────────────────────────────────────────
