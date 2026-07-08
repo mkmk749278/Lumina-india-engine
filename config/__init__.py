@@ -221,21 +221,53 @@ REGIME_QUIET_ATR_PCT: float = _safe_float("REGIME_QUIET_ATR_PCT", 0.15)
 # step). Stocks span ₹100–₹25,000, so absolute points are meaningless there —
 # these helpers give every consumer one price-aware answer for any base.
 
-# Minimum viable TP1 distance for stock bases, % of entry (IB11 equivalent —
-# covers round-trip STT + brokerage + slippage on stock futures).
+# --- round-trip cost model (STT-aware, IB11) -----------------------------
+# All-in cost of a futures round trip as a % of notional. Used to (a) floor the
+# minimum viable TP1 distance and (b) score reward *net* of cost. Dominated by
+# STT, which NSE hiked on futures from 0.02% to 0.05% (sell side) effective
+# 1-Apr-2026 (Budget 2026-27): the legacy 15/40-point floors were calibrated
+# against the 0.02% era and became break-even overnight. Round-trip components:
+#   STT           0.050%  (sell leg only — futures have no buy-side STT)
+#   exchange txn  ~0.0019% x2 legs
+#   stamp duty    0.002%  (buy leg only)
+#   SEBI + GST    ~0.001%
+#   brokerage     flat ~Rs40/lot-set — negligible vs notional, ignored here
+# ≈ 0.06% of notional. One env knob so the next STT/charge revision is a config
+# change, not a code change. (Sources: NSE Clearing STT schedule, Budget 2026-27.)
+ROUNDTRIP_COST_PCT: float = _safe_float("INDIA_ROUNDTRIP_COST_PCT", 0.06)
+
+
+def round_trip_cost_points(price: float) -> float:
+    """All-in round-trip cost in points for a futures trade at *price*."""
+    return max(0.0, price) * ROUNDTRIP_COST_PCT / 100.0
+
+
+# TP1 must clear this multiple of the round-trip cost, so a winner keeps a real
+# margin after costs instead of paying its whole target back in STT.
+MIN_SCALP_COST_MULT: float = _safe_float("INDIA_MIN_SCALP_COST_MULT", 1.5)
+
+# Minimum viable TP1 distance for stock bases, % of entry (IB11 equivalent).
 MIN_SCALP_PCT: float = _safe_float("INDIA_MIN_SCALP_PCT", 0.10)
 
 
 def min_scalp_points_for(base: str, price: float) -> float:
     """IB11 minimum viable TP1 distance in points for *base* at *price*.
 
-    Index instruments use their NSE-verified absolute floors; stock bases
-    scale by price (``MIN_SCALP_PCT``).
+    The floor is the larger of (a) the instrument's NSE-verified absolute floor
+    (or, for stocks, the price-relative ``MIN_SCALP_PCT`` floor) and (b) a
+    cost-relative floor (``round-trip cost x MIN_SCALP_COST_MULT``). The
+    cost-relative term keeps the floor honest after the Apr-2026 STT hike: at
+    NIFTY ~24,000 the round-trip cost alone is ~14 points, so the legacy
+    15-point floor left ~0 net. The cost floor lifts TP1 to a genuinely
+    profitable distance and auto-tracks any future STT/charge change.
     """
     inst = INSTRUMENTS.get(base)
     if inst is not None:
-        return float(inst.min_scalp_points)
-    return price * MIN_SCALP_PCT / 100.0
+        absolute = float(inst.min_scalp_points)
+    else:
+        absolute = price * MIN_SCALP_PCT / 100.0
+    cost_floor = round_trip_cost_points(price) * MIN_SCALP_COST_MULT
+    return max(absolute, cost_floor)
 
 
 def round_step_for(base: str, price: float) -> float:
