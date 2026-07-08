@@ -93,6 +93,16 @@ class ExpiryManager:
         month = expiry.strftime("%b").upper()
         return f"NSE:{base}{year}{month}FUT"
 
+    def is_contract_expiry_day(self, now: datetime | None = None) -> bool:
+        """True if today is this month's (holiday-adjusted) contract expiry.
+
+        Stock F&O has no weekly cadence — IB16 expiry-day behaviour for stock
+        bases keys off the monthly contract expiry instead of the weekly flag.
+        """
+        moment = self._now(now)
+        today = moment.date()
+        return self._last_weekday_of_month(today.year, today.month) == today
+
     # ── Weekly expiry (Tuesday) — gamma squeeze / IB16 behaviour ─────────
 
     def get_weekly_expiry_date(self, now: datetime | None = None) -> date:

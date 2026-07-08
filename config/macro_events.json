@@ -1,0 +1,11 @@
+{
+  "_comment": "Macro binary-event dates (IB13) — the event-risk gate suppresses ALL signals on these dates. RBI MPC announcement days per the RBI FY2026-27 MPC calendar (announcement ~10:00 IST on the final meeting day); Union Budget day. Refresh when RBI publishes the next FY calendar and after each Budget announcement.",
+  "_source": "RBI MPC meeting calendar FY2026-27; Union Budget 2027-02-01",
+  "verified": true,
+  "events": {
+    "2026-08-05": "RBI MPC policy announcement",
+    "2026-10-07": "RBI MPC policy announcement",
+    "2026-12-04": "RBI MPC policy announcement",
+    "2027-02-01": "Union Budget"
+  }
+}

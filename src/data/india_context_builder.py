@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import config
 from config import INSTRUMENTS, IST
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
@@ -37,6 +38,7 @@ class IndiaContextBuilder:
         self._prev_high = prev_day_high or {}
         self._prev_low = prev_day_low or {}
         self._prev_close = prev_day_close or {}
+        self._daily_regime: dict[str, Regime] = {}
 
     def set_prev_day(
         self, symbol: str, high: float, low: float, close: float
@@ -44,6 +46,11 @@ class IndiaContextBuilder:
         self._prev_high[symbol] = high
         self._prev_low[symbol] = low
         self._prev_close[symbol] = close
+
+    def set_daily_regime(self, symbol: str, regime: Regime) -> None:
+        """Set the daily-timeframe regime, classified from the feed's daily
+        history fetch at seed time (a daily regime does not move intraday)."""
+        self._daily_regime[symbol] = regime
 
     def build(self, symbol: str, base: str, now: datetime) -> IndiaContext:
         """Build a context snapshot for *symbol* at time *now* (IST)."""
@@ -59,14 +66,20 @@ class IndiaContextBuilder:
         regime_60m = (
             classify(candles_60m) if len(candles_60m) >= 15 else Regime.RANGING
         )
-        regime_daily = Regime.RANGING
+        regime_daily = self._daily_regime.get(symbol, Regime.RANGING)
 
         or_high, or_low = self._tick.get_opening_range(symbol)
 
         ist_now = now.astimezone(IST) if now.tzinfo else IST.localize(now)
         scan_time = ist_now.timetz()
 
-        is_expiry = self._expiry.is_weekly_expiry_day(ist_now)
+        # IB16 expiry-day behaviour: index bases key off the weekly (Tuesday)
+        # options expiry; stock F&O has no weekly cadence, so stock bases key
+        # off their monthly contract expiry day.
+        if base in config.INDEX_BASES:
+            is_expiry = self._expiry.is_weekly_expiry_day(ist_now)
+        else:
+            is_expiry = self._expiry.is_contract_expiry_day(ist_now)
 
         return IndiaContext(
             base=base,

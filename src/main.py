@@ -99,7 +99,12 @@ async def _run() -> None:
             )
     else:
         fyers_feed = FyersDataFeed(
-            tick, oi, mkt, expiry, on_prev_day=ctx_builder.set_prev_day
+            tick,
+            oi,
+            mkt,
+            expiry,
+            on_prev_day=ctx_builder.set_prev_day,
+            on_daily_regime=ctx_builder.set_daily_regime,
         )
         feed = fyers_feed
         client_id = os.environ.get("FYERS_CLIENT_ID", "")
@@ -224,6 +229,16 @@ async def _run() -> None:
                                 "daily feed refresh failed"
                             )
                 if state == SessionState.CLOSED and prev_state is not None:
+                    # Resolve any TP/SL touch that landed during CLOSING
+                    # before scoring the remainder as EXPIRED.
+                    for oc in monitor.check(now):
+                        await insert_outcome(
+                            oc.signal_id,
+                            oc.outcome,
+                            oc.exit_price,
+                            oc.points,
+                            oc.resolved_at,
+                        )
                     for oc in monitor.force_close_all(now):
                         await insert_outcome(
                             oc.signal_id,
@@ -254,14 +269,6 @@ async def _run() -> None:
                     persisted_suppressions = len(all_suppressions)
 
                 monitor.register(signals, now)
-                for oc in monitor.check(now):
-                    await insert_outcome(
-                        oc.signal_id,
-                        oc.outcome,
-                        oc.exit_price,
-                        oc.points,
-                        oc.resolved_at,
-                    )
 
                 for s in signals:
                     logger.info(
@@ -271,6 +278,21 @@ async def _run() -> None:
                         s.symbol,
                         s.confidence,
                         s.tier,
+                    )
+
+            # Outcome tracking runs through CLOSING too — a TP/SL touch
+            # between 15:20 and 15:30 is a real outcome, not an expiry.
+            if (
+                state in (SessionState.OPEN, SessionState.CLOSING)
+                or config.INDIA_DEV_MODE
+            ):
+                for oc in monitor.check(now):
+                    await insert_outcome(
+                        oc.signal_id,
+                        oc.outcome,
+                        oc.exit_price,
+                        oc.points,
+                        oc.resolved_at,
                     )
 
             _HEARTBEAT_PATH.write_text(str(now.timestamp()))

@@ -55,19 +55,48 @@ def _seq(n: int) -> list[Candle]:
     ]
 
 
-def test_aggregate_60m_groups_twelve_5m_bars() -> None:
-    c5 = _seq(24)  # exactly two 60m bars
+def test_aggregate_60m_buckets_by_clock_time() -> None:
+    # 24 bars from 09:15: clock-hour buckets are 09:00 (09:15–09:55, 9 bars),
+    # 10:00 (12 bars), 11:00 (3 bars) — same boundaries the live tick store
+    # uses, so seeded and live 60m bars line up.
+    c5 = _seq(24)
     c60 = aggregate_candles(c5, 60)
-    assert len(c60) == 2
+    assert len(c60) == 3
+    assert [(c.ts.hour, c.ts.minute) for c in c60] == [(9, 0), (10, 0), (11, 0)]
     assert c60[0].open == c5[0].open
-    assert c60[0].close == c5[11].close
-    assert c60[0].high == max(c.high for c in c5[:12])
-    assert c60[0].volume == sum(c.volume for c in c5[:12])
+    assert c60[0].close == c5[8].close
+    assert c60[0].high == max(c.high for c in c5[:9])
+    assert c60[0].volume == sum(c.volume for c in c5[:9])
+    assert c60[1].open == c5[9].open
+    assert c60[1].close == c5[20].close
 
 
-def test_aggregate_drops_incomplete_trailing_bucket() -> None:
-    # 15m aggregation of 7 bars -> two full 15m bars (6 bars), last one dropped.
-    assert len(aggregate_candles(_seq(7), 15)) == 2
+def test_aggregate_keeps_partial_trailing_bucket() -> None:
+    # 7 bars from 09:15 -> 15m buckets 09:15 (3), 09:30 (3), 09:45 (1).
+    # The partial tail is kept; callers seeding a live store trim the
+    # currently-forming bucket explicitly against "now".
+    assert len(aggregate_candles(_seq(7), 15)) == 3
+
+
+def test_aggregate_never_merges_across_days() -> None:
+    # A group must never span the overnight gap even when bar counts would
+    # let the old fixed-count grouping merge two sessions into one candle.
+    day1 = _seq(75)  # full session 09:15–15:25
+    day2 = [
+        Candle(
+            ts=c.ts + timedelta(days=1),
+            open=c.open,
+            high=c.high,
+            low=c.low,
+            close=c.close,
+            volume=c.volume,
+        )
+        for c in _seq(12)
+    ]
+    c60 = aggregate_candles(day1 + day2, 60)
+    day1_date = day1[0].ts.date()
+    day2_date = day2[0].ts.date()
+    assert {c.ts.date() for c in c60} == {day1_date, day2_date}
 
 
 def test_aggregate_60m_yields_enough_bars_for_regime() -> None:

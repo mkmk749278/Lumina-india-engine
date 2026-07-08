@@ -147,6 +147,42 @@ class IndiaTickStore:
                 self._aggregate(candles_5m, 60)[-self._max :]
             )
 
+    def seed_intraday_state(
+        self,
+        symbol: str,
+        todays_candles: list[Candle],
+        now: datetime,
+    ) -> None:
+        """Rebuild day-open / intraday extremes / opening range from today's
+        historical candles.
+
+        Without this, a mid-session (re)start leaves ``day_open`` to be set by
+        the first live tick (wrong price → circuit gate and VIX-extreme drop%
+        computed off noon prices) and loses the opening range for the rest of
+        the day (ORB and FAILED_AUCTION_RECLAIM blind). Call after ``seed``
+        with the candles belonging to the current IST date.
+        """
+        if not todays_candles:
+            return
+        self._ensure_symbol(symbol)
+        self._state_date = now.date()
+
+        first = todays_candles[0]
+        self._day_open[symbol] = first.open
+        self._intraday_high[symbol] = max(c.high for c in todays_candles)
+        self._intraday_low[symbol] = min(c.low for c in todays_candles)
+
+        or_bars = [
+            c
+            for c in todays_candles
+            if MARKET_OPEN <= c.ts.time() < _OR_END
+        ]
+        if or_bars:
+            self._or_high[symbol] = max(c.high for c in or_bars)
+            self._or_low[symbol] = min(c.low for c in or_bars)
+            if now.time() >= _OR_END:
+                self._or_locked.add(symbol)
+
     # ------------------------------------------------------------------
     # Tick ingestion
     # ------------------------------------------------------------------

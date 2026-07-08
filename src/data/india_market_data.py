@@ -41,19 +41,26 @@ class IndiaMarketData:
         outstanding options is minimised (i.e. where option sellers — market
         makers — lose the least money at expiry).
         """
-        if not strikes or len(strikes) != len(call_oi) != len(put_oi):
+        if (
+            not strikes
+            or len(strikes) != len(call_oi)
+            or len(strikes) != len(put_oi)
+        ):
             return 0.0
 
         min_pain = float("inf")
         best_strike = 0.0
 
+        # At an expiry price P: calls struck below P pay (P - strike), puts
+        # struck above P pay (strike - P). Max pain minimises that total
+        # payout to holders.
         for candidate in strikes:
             pain = 0.0
             for i, s in enumerate(strikes):
                 if candidate > s:
-                    pain += put_oi[i] * (candidate - s)
+                    pain += call_oi[i] * (candidate - s)
                 elif candidate < s:
-                    pain += call_oi[i] * (s - candidate)
+                    pain += put_oi[i] * (s - candidate)
             if pain < min_pain:
                 min_pain = pain
                 best_strike = candidate

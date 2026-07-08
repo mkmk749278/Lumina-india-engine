@@ -14,17 +14,22 @@ def make_signal(
     *,
     direction: str = Direction.LONG,
     setup_class: str = SetupClass.TREND_PULLBACK_EMA,
+    base: str = "NIFTY",
     entry: float = 24000.0,
+    sl: float | None = None,
+    tp1: float | None = None,
     rr_ratio: float = 2.0,
     htf_trend_aligned: bool = False,
     breakout_volume_ratio: float = 0.0,
 ) -> IndiaSignal:
-    sl = entry - 20.0 if direction == Direction.LONG else entry + 20.0
-    tp1 = entry + 40.0 if direction == Direction.LONG else entry - 40.0
+    if sl is None:
+        sl = entry - 20.0 if direction == Direction.LONG else entry + 20.0
+    if tp1 is None:
+        tp1 = entry + 40.0 if direction == Direction.LONG else entry - 40.0
     return IndiaSignal(
         signal_id="test",
         symbol="NSE:NIFTY26JULFUT",
-        base="NIFTY",
+        base=base,
         direction=direction,
         setup_class=setup_class,
         entry=entry,

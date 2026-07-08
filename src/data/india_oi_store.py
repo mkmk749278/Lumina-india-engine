@@ -35,9 +35,11 @@ class IndiaOIStore:
         self._max = max_snapshots
 
         self._oi: dict[str, deque[OISnapshot]] = {}
-        self._pcr: float = 0.0
-        self._total_put_oi: float = 0.0
-        self._total_call_oi: float = 0.0
+        # Per-base option-chain OI totals; market-wide PCR is computed over
+        # the sum so alternating NIFTY/BANKNIFTY chain polls don't make the
+        # ratio flip between two different per-index values.
+        self._put_oi_by_base: dict[str, float] = {}
+        self._call_oi_by_base: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Writers (called by the 1-minute poller)
@@ -50,14 +52,11 @@ class IndiaOIStore:
         self._oi[symbol].append(OISnapshot(ts=ts, oi=oi))
 
     def update_pcr(
-        self, total_put_oi: float, total_call_oi: float
+        self, total_put_oi: float, total_call_oi: float, base: str = "MARKET"
     ) -> None:
-        """Update market-wide PCR from option chain aggregates."""
-        self._total_put_oi = total_put_oi
-        self._total_call_oi = total_call_oi
-        self._pcr = (
-            total_put_oi / total_call_oi if total_call_oi > 0 else 0.0
-        )
+        """Update option-chain OI aggregates for one index *base*."""
+        self._put_oi_by_base[base] = total_put_oi
+        self._call_oi_by_base[base] = total_call_oi
 
     # ------------------------------------------------------------------
     # Readers (consumed by context builder)
@@ -87,10 +86,14 @@ class IndiaOIStore:
         return ((latest.oi - baseline.oi) / baseline.oi) * 100.0
 
     def get_pcr(self) -> float:
-        return self._pcr
+        """Market-wide PCR over all polled index chains (0.0 if none yet)."""
+        total_calls = sum(self._call_oi_by_base.values())
+        total_puts = sum(self._put_oi_by_base.values())
+        return total_puts / total_calls if total_calls > 0 else 0.0
 
     def is_pcr_extreme_bearish(self) -> bool:
-        return self._pcr > 0 and self._pcr < self._pcr_low
+        pcr = self.get_pcr()
+        return 0 < pcr < self._pcr_low
 
     def is_pcr_extreme_bullish(self) -> bool:
-        return self._pcr > self._pcr_high
+        return self.get_pcr() > self._pcr_high

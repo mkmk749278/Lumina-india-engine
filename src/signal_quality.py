@@ -138,7 +138,7 @@ class IndiaSignalScoringEngine:
     def _score_level_confluence(signal: IndiaSignal, ctx: IndiaContext) -> float:
         entry = signal.entry
         tolerance = ctx.atr14_5m * 0.5
-        step = 50.0 if ctx.base == "NIFTY" else 100.0
+        step = config.round_step_for(ctx.base, entry)
         base_round = round(entry / step) * step
         key_levels: list[float | None] = [
             ctx.opening_range_high,
@@ -184,7 +184,8 @@ class IndiaSignalScoringEngine:
     @staticmethod
     def _score_vix_pcr(signal: IndiaSignal, ctx: IndiaContext) -> float:
         score = 5.0
-        if ctx.india_vix < 14 and signal.setup_class in _LOW_VIX_FAVOURED:
+        # vix == 0.0 means "no VIX reading yet", not "record-low vol" — no bonus.
+        if 0 < ctx.india_vix < 14 and signal.setup_class in _LOW_VIX_FAVOURED:
             score += 2.0
         elif ctx.india_vix > 18 and signal.setup_class in _HIGH_VIX_FAVOURED:
             score += 2.0
@@ -198,8 +199,16 @@ class IndiaSignalScoringEngine:
 
     @staticmethod
     def _score_structure(signal: IndiaSignal, ctx: IndiaContext) -> float:
-        base_atr = 10.0 if ctx.base == "NIFTY" else 25.0
-        atr_ratio = ctx.atr14_5m / base_atr if base_atr else 0.0
+        # Volatility-normality score: ATR as % of price against the typical
+        # 5m band for the instrument class (indices run far tighter than
+        # single stocks). Absolute-point baselines only made sense for the
+        # two original indices.
+        last = ctx.candles_5m[-1].close if ctx.candles_5m else 0.0
+        if last <= 0:
+            return 2.0
+        atr_pct = ctx.atr14_5m / last * 100.0
+        baseline = 0.035 if ctx.base in config.INDEX_BASES else 0.12
+        atr_ratio = atr_pct / baseline
         if atr_ratio < 0.5:
             return 2.0
         if atr_ratio > 3.0:
