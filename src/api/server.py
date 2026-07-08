@@ -75,7 +75,16 @@ def _with_live(row: dict, prices: dict[str, float]) -> dict:
     entry = float(row.get("entry", 0) or 0)
     direction = str(row.get("direction", ""))
     points = (price - entry) if direction == "LONG" else (entry - price)
-    return {**row, "current_price": price, "live_points": round(points, 1)}
+    # live_pct is the cross-instrument-comparable running result (points as % of
+    # entry) — the app leads with % since raw points are not comparable across a
+    # 46-base universe.
+    live_pct = (points / entry * 100.0) if entry > 0 else 0.0
+    return {
+        **row,
+        "current_price": price,
+        "live_points": round(points, 1),
+        "live_pct": round(live_pct, 2),
+    }
 
 
 def set_token_refresh_callback(cb: Callable[[str], Awaitable[None]]) -> None:

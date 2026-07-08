@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS india_signal_outcomes (
     outcome     TEXT NOT NULL,
     exit_price  REAL NOT NULL,
     points      REAL NOT NULL,
+    pct         REAL NOT NULL DEFAULT 0,
     resolved_at TEXT NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 )
@@ -83,9 +84,33 @@ CREATE TABLE IF NOT EXISTS india_session_summary (
     sl_count         INTEGER NOT NULL,
     expired_count    INTEGER NOT NULL,
     total_points     REAL NOT NULL,
+    total_pct        REAL NOT NULL DEFAULT 0,
+    avg_pct          REAL NOT NULL DEFAULT 0,
     created_at       TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 )
 """
+
+# Columns added after the tables first shipped. SQLite has no
+# ADD COLUMN IF NOT EXISTS, so we add each only when absent — an existing prod
+# DB (with rows) is upgraded in place without dropping history.
+_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "india_signal_outcomes": [("pct", "REAL NOT NULL DEFAULT 0")],
+    "india_session_summary": [
+        ("total_pct", "REAL NOT NULL DEFAULT 0"),
+        ("avg_pct", "REAL NOT NULL DEFAULT 0"),
+    ],
+}
+
+
+async def _migrate(db) -> None:  # type: ignore[no-untyped-def]
+    for table, columns in _MIGRATIONS.items():
+        cursor = await db.execute(f"PRAGMA table_info({table})")
+        existing = {str(r[1]) for r in await cursor.fetchall()}
+        for name, decl in columns:
+            if name not in existing:
+                await db.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {name} {decl}"
+                )
 
 
 async def init_tables() -> None:
@@ -94,6 +119,7 @@ async def init_tables() -> None:
     await db.execute(_SUPPRESSIONS_DDL)
     await db.execute(_OUTCOMES_DDL)
     await db.execute(_SESSION_SUMMARY_DDL)
+    await _migrate(db)
     await db.commit()
 
 
@@ -175,30 +201,48 @@ async def get_signals(
     params: list[str | int] = []
 
     if date:
-        clauses.append("DATE(created_at) = ?")
+        clauses.append("DATE(s.created_at) = ?")
         params.append(date)
     if tier:
-        clauses.append("tier = ?")
+        clauses.append("s.tier = ?")
         params.append(tier)
     if setup_class:
-        clauses.append("setup_class = ?")
+        clauses.append("s.setup_class = ?")
         params.append(setup_class)
 
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     params.append(limit)
 
     cursor = await db.execute(
-        f"SELECT * FROM india_signals{where} ORDER BY created_at DESC LIMIT ?",
+        f"SELECT {_SIGNAL_WITH_STATUS_SELECT}{where}"
+        " ORDER BY s.created_at DESC LIMIT ?",
         params,
     )
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]
 
 
+# A signal joined to its outcome (if resolved). ``status`` is OPEN until the
+# monitor resolves the signal to TP1_HIT / SL_HIT / EXPIRED, so every card can
+# show where the trade stands. ``result_points`` / ``result_pct`` are the
+# realised, signed result once resolved (NULL while OPEN).
+_SIGNAL_WITH_STATUS_SELECT = """
+    s.*,
+    COALESCE(o.outcome, 'OPEN') AS status,
+    o.points     AS result_points,
+    o.pct        AS result_pct,
+    o.exit_price AS exit_price,
+    o.resolved_at AS resolved_at
+FROM india_signals s
+LEFT JOIN india_signal_outcomes o ON o.signal_id = s.signal_id
+"""
+
+
 async def get_signal_by_id(signal_id: str) -> dict | None:
     db = await get_db()
     cursor = await db.execute(
-        "SELECT * FROM india_signals WHERE signal_id = ?", (signal_id,)
+        f"SELECT {_SIGNAL_WITH_STATUS_SELECT} WHERE s.signal_id = ?",
+        (signal_id,),
     )
     row = await cursor.fetchone()
     return dict(row) if row else None
@@ -228,16 +272,17 @@ async def insert_outcome(
     outcome: str,
     exit_price: float,
     points: float,
+    pct: float,
     resolved_at: datetime,
 ) -> None:
     db = await get_db()
     await db.execute(
         """
         INSERT OR IGNORE INTO india_signal_outcomes
-            (signal_id, outcome, exit_price, points, resolved_at)
-        VALUES (?, ?, ?, ?, ?)
+            (signal_id, outcome, exit_price, points, pct, resolved_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (signal_id, outcome, exit_price, points, str(resolved_at)),
+        (signal_id, outcome, exit_price, points, pct, str(resolved_at)),
     )
     await db.commit()
 
@@ -253,7 +298,8 @@ async def get_outcomes(date: str | None = None, limit: int = 100) -> list[dict]:
     params.append(limit)
     cursor = await db.execute(
         f"""
-        SELECT o.signal_id, o.outcome, o.exit_price, o.points, o.resolved_at,
+        SELECT o.signal_id, o.outcome, o.exit_price, o.points, o.pct,
+               o.resolved_at,
                s.symbol, s.base, s.direction, s.setup_class, s.tier,
                s.entry, s.sl, s.tp1, s.created_at AS emitted_at
         FROM india_signal_outcomes o
@@ -310,7 +356,9 @@ async def write_session_summary() -> dict:
             COALESCE(SUM(CASE WHEN outcome = 'TP1_HIT' THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(CASE WHEN outcome = 'SL_HIT' THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(CASE WHEN outcome = 'EXPIRED' THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(points), 0)
+            COALESCE(SUM(points), 0),
+            COALESCE(SUM(pct), 0),
+            COALESCE(AVG(pct), 0)
         FROM india_signal_outcomes
         WHERE DATE(created_at) = DATE('now', 'localtime')
         """
@@ -329,7 +377,11 @@ async def write_session_summary() -> dict:
         "tp1_count": int(oc_row[0]),
         "sl_count": int(oc_row[1]),
         "expired_count": int(oc_row[2]),
+        # total_points kept for continuity, but % is the honest cross-instrument
+        # measure — summing points across a 46-base universe is meaningless.
         "total_points": round(float(oc_row[3]), 2),
+        "total_pct": round(float(oc_row[4]), 3),
+        "avg_pct": round(float(oc_row[5]), 3),
     }
 
     await db.execute(
@@ -337,8 +389,8 @@ async def write_session_summary() -> dict:
         INSERT INTO india_session_summary
             (date, signal_count, a_plus_count, b_count, avg_confidence,
              total_suppressed, gates_fired, tp1_count, sl_count,
-             expired_count, total_points)
-        VALUES (DATE('now', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             expired_count, total_points, total_pct, avg_pct)
+        VALUES (DATE('now', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(date) DO UPDATE SET
             signal_count = excluded.signal_count,
             a_plus_count = excluded.a_plus_count,
@@ -349,7 +401,9 @@ async def write_session_summary() -> dict:
             tp1_count = excluded.tp1_count,
             sl_count = excluded.sl_count,
             expired_count = excluded.expired_count,
-            total_points = excluded.total_points
+            total_points = excluded.total_points,
+            total_pct = excluded.total_pct,
+            avg_pct = excluded.avg_pct
         """,
         (
             summary["signal_count"],
@@ -362,6 +416,8 @@ async def write_session_summary() -> dict:
             summary["sl_count"],
             summary["expired_count"],
             summary["total_points"],
+            summary["total_pct"],
+            summary["avg_pct"],
         ),
     )
     await db.commit()

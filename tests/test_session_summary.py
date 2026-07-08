@@ -56,8 +56,8 @@ async def test_summary_aggregates_all_three_tables() -> None:
         "NIFTY", "min_atr_gate", "ATR 1.0 < 3.0", "TPE", "LONG", now
     )
 
-    await insert_outcome("sig-LONG", "TP1_HIT", 24600.0, 100.0, now)
-    await insert_outcome("sig-SHORT", "SL_HIT", 24550.0, -50.0, now)
+    await insert_outcome("sig-LONG", "TP1_HIT", 24600.0, 100.0, 0.4, now)
+    await insert_outcome("sig-SHORT", "SL_HIT", 24550.0, -50.0, -0.2, now)
 
     summary = await write_session_summary()
 
@@ -74,6 +74,10 @@ async def test_summary_aggregates_all_three_tables() -> None:
     assert summary["sl_count"] == 1
     assert summary["expired_count"] == 0
     assert summary["total_points"] == 50.0
+    # % is the cross-instrument-comparable measure: +0.4% and -0.2% -> +0.2%
+    # cumulative, +0.1% average per signal.
+    assert summary["total_pct"] == 0.2
+    assert summary["avg_pct"] == 0.1
 
 
 async def test_summary_idempotent_per_date() -> None:
