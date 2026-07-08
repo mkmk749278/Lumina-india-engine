@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+import config
 from src.api.server import build_app, set_engine_refs
 from src.db import close_db
 from src.fcm_dispatcher import init_fcm_tables
-from src.signal_store import init_tables, insert_signal
+from src.signal_store import init_tables, insert_outcome, insert_signal
 from src.signals.model import IndiaSignal
 
 
@@ -302,9 +305,30 @@ async def test_signals_live_price_overlay():
 
     assert listed[0]["current_price"] == 24560.0
     assert listed[0]["live_points"] == 60.0
+    # running % = 60 / 24500 * 100 — the cross-instrument-comparable figure.
+    assert listed[0]["live_pct"] == 0.24
     assert detail["current_price"] == 24560.0
     assert detail["live_points"] == 60.0
+    assert detail["live_pct"] == 0.24
     set_engine_refs(1000.0, [0], ["CLOSED"])  # reset module globals
+
+
+async def test_signals_carry_outcome_status(client):
+    # OPEN until the monitor resolves it; then the card carries the realised
+    # status + signed % so the app can badge TP1/SL/EXPIRED with a real result.
+    await insert_signal(_make_signal(signal_id="s-open"))
+    await insert_signal(_make_signal(signal_id="s-done"))
+    await insert_outcome(
+        "s-done", "TP1_HIT", 24600.0, 100.0, 0.41, datetime.now(config.IST)
+    )
+    rows = {r["signal_id"]: r for r in (await client.get("/api/signals")).json()}
+    assert rows["s-open"]["status"] == "OPEN"
+    assert rows["s-open"]["result_pct"] is None
+    assert rows["s-done"]["status"] == "TP1_HIT"
+    assert rows["s-done"]["result_pct"] == 0.41
+    assert rows["s-done"]["result_points"] == 100.0
+    detail = (await client.get("/api/signals/s-done")).json()
+    assert detail["status"] == "TP1_HIT"
 
 
 async def test_signals_no_overlay_without_price():

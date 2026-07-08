@@ -78,6 +78,8 @@ def test_long_tp1_hit() -> None:
     assert len(outcomes) == 1
     assert outcomes[0].outcome == OUTCOME_TP1
     assert outcomes[0].points == 100.0
+    # Signed % return = points / entry — the cross-instrument-comparable measure.
+    assert round(outcomes[0].pct, 4) == round(100.0 / 24500.0 * 100.0, 4)
     assert monitor.open_count == 0
 
 

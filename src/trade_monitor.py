@@ -53,6 +53,12 @@ class SignalOutcome:
     outcome: str
     exit_price: float
     points: float
+    # Signed % return — points as a fraction of entry. This is the only
+    # cross-instrument-comparable result: +67 NIFTY points and +0.4 TATASTEEL
+    # points are both ~+0.2% moves, but summing raw points across a 46-base
+    # universe is meaningless (it just weights by price level). The app/ops
+    # aggregate this, not `points`.
+    pct: float
     resolved_at: datetime
 
 
@@ -174,18 +180,22 @@ class IndiaTradeMonitor:
         now: datetime,
     ) -> SignalOutcome:
         del self._open[tracked.signal_id]
+        points = _points(tracked.direction, tracked.entry, exit_price)
+        pct = (points / tracked.entry * 100.0) if tracked.entry > 0 else 0.0
         result = SignalOutcome(
             signal_id=tracked.signal_id,
             outcome=outcome,
             exit_price=exit_price,
-            points=_points(tracked.direction, tracked.entry, exit_price),
+            points=points,
+            pct=pct,
             resolved_at=now,
         )
         logger.info(
-            "outcome {} -> {} exit={:.1f} points={:+.1f}",
+            "outcome {} -> {} exit={:.1f} points={:+.1f} ({:+.2f}%)",
             tracked.signal_id,
             outcome,
             exit_price,
             result.points,
+            result.pct,
         )
         return result

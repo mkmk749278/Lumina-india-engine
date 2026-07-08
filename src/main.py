@@ -237,6 +237,7 @@ async def _run() -> None:
                             oc.outcome,
                             oc.exit_price,
                             oc.points,
+                            oc.pct,
                             oc.resolved_at,
                         )
                     for oc in monitor.force_close_all(now):
@@ -245,6 +246,7 @@ async def _run() -> None:
                             oc.outcome,
                             oc.exit_price,
                             oc.points,
+                            oc.pct,
                             oc.resolved_at,
                         )
                     summary = await write_session_summary()
@@ -292,6 +294,7 @@ async def _run() -> None:
                         oc.outcome,
                         oc.exit_price,
                         oc.points,
+                        oc.pct,
                         oc.resolved_at,
                     )
 
