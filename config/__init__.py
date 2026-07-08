@@ -263,10 +263,17 @@ def round_step_for(base: str, price: float) -> float:
 # Emit floor and A+ cutoff on the 0-100 confidence score (spec §11/§13.1).
 # Below the floor a candidate is FILTERED (no FCM, no DB write).
 # LOOSEN PASS (Session 8b): floor dropped 65 -> 55 to restore signal flow now
-# that the 60m regime forms (so regime/HTF components score honestly). This is
-# the primary quality knob — raise it back toward 65-70 once the 30-day outcome
-# data shows the B-tier win rate. A+ cutoff (80) is unchanged: A+ stays scarce.
-CONFIDENCE_EMIT_FLOOR: float = _safe_float("INDIA_CONFIDENCE_EMIT_FLOOR", 55.0)
+# that the 60m regime forms (so regime/HTF components score honestly).
+# RECALIBRATION (Session 10): floor 55 -> 50. PR #44 fixed the cumulative-volume
+# bug that inflated the volume component to 15/15 on every live signal — every
+# score carried a systematic ~5-7pt of inflation. The 55 floor was set (PR #39)
+# against those inflated scores, so post-#44 its *effective* selectivity rose to
+# ~60-62 and starved genuine A/B setups (NIFTY emitting ~0). Dropping to 50
+# restores the owner's intended PR#39 selectivity against honest scores. The
+# daily/per-scan caps (10/3, ranked best-first) bound the flood risk regardless.
+# This is the primary quality knob — raise it back toward 60-65 once the 30-day
+# outcome data shows the B-tier win rate. A+ cutoff (80) is unchanged: A+ scarce.
+CONFIDENCE_EMIT_FLOOR: float = _safe_float("INDIA_CONFIDENCE_EMIT_FLOOR", 50.0)
 CONFIDENCE_A_PLUS: float = _safe_float("INDIA_CONFIDENCE_A_PLUS", 80.0)
 
 # SL-floor recalibration (LOOSEN PASS, Session 8b) -----------------------

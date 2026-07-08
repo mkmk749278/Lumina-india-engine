@@ -228,7 +228,10 @@ def test_confidence_floor_gate_suppresses_low_score() -> None:
     chain = GateChain()
     sig = make_signal()
     ctx = make_context(atr14_5m=10.0)
-    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0), confidence=50.0)
+    below_floor = config.CONFIDENCE_EMIT_FLOOR - 5.0
+    result = chain.check(
+        sig, ctx, SessionState.OPEN, _ist(10, 0), confidence=below_floor
+    )
     assert result == "confidence_floor_gate"
 
 

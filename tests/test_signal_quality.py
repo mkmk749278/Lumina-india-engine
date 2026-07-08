@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import config
 from src.regime import Regime
 from src.signal_quality import IndiaSignalScoringEngine, tier_for
 from src.signals.model import Direction, SetupClass, Tier
@@ -12,11 +13,12 @@ ENGINE = IndiaSignalScoringEngine()
 
 
 def test_tier_boundaries() -> None:
-    assert tier_for(80.0) == Tier.A_PLUS
-    assert tier_for(79.9) == Tier.B
-    # Emit floor loosened to 55 (Session 8b) — B spans [55, 80).
-    assert tier_for(55.0) == Tier.B
-    assert tier_for(54.9) == Tier.FILTERED
+    assert tier_for(config.CONFIDENCE_A_PLUS) == Tier.A_PLUS
+    assert tier_for(config.CONFIDENCE_A_PLUS - 0.1) == Tier.B
+    # B spans [emit floor, A+); floor recalibrated 55 -> 50 (Session 10) for
+    # post-#44 honest scores. Assert against config so the tune is single-source.
+    assert tier_for(config.CONFIDENCE_EMIT_FLOOR) == Tier.B
+    assert tier_for(config.CONFIDENCE_EMIT_FLOOR - 0.1) == Tier.FILTERED
 
 
 def test_score_is_clamped_0_100() -> None:
