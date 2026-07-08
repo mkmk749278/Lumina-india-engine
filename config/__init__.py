@@ -270,6 +270,44 @@ def min_scalp_points_for(base: str, price: float) -> float:
     return max(absolute, cost_floor)
 
 
+# --- broker-resolved lot sizes -------------------------------------------
+# Stock F&O bases carry no static lot size (INSTRUMENTS covers only the four
+# indices), so their cards showed "lot 0". The Fyers symbol master publishes the
+# NSE-mandated lot size for every F&O underlying; the feed resolves it once a day
+# at seed and populates this registry. Broker value wins over the static
+# INSTRUMENTS fallback; env `FYERS_SYMBOL_MASTER_URL` overrides the source.
+FYERS_SYMBOL_MASTER_URL: str = _safe_str(
+    "FYERS_SYMBOL_MASTER_URL", "https://public.fyers.in/sym_details/NSE_FO.csv"
+)
+
+_RESOLVED_LOT_SIZES: dict[str, int] = {}
+
+
+def set_resolved_lot_sizes(mapping: dict[str, int]) -> None:
+    """Merge broker-resolved lot sizes (base -> units/lot) into the registry.
+
+    Zero/negative values are ignored so a partial or malformed master can never
+    wipe a good static fallback.
+    """
+    for base, lot in mapping.items():
+        if lot and lot > 0:
+            _RESOLVED_LOT_SIZES[base.upper()] = int(lot)
+
+
+def lot_size_for(base: str) -> int:
+    """NSE F&O lot size (whole units/lot) for *base*.
+
+    Broker symbol master (refreshed daily at seed) wins; falls back to the
+    static INSTRUMENTS value for the four indices; 0 if still unknown (a stock
+    base before the master has resolved).
+    """
+    b = base.upper()
+    if b in _RESOLVED_LOT_SIZES:
+        return _RESOLVED_LOT_SIZES[b]
+    inst = INSTRUMENTS.get(b)
+    return inst.lot_size if inst is not None else 0
+
+
 def round_step_for(base: str, price: float) -> float:
     """Psychological round-number step for *base* at *price*.
 
@@ -336,6 +374,10 @@ ORB_VOLUME_MULT: float = _safe_float("ORB_VOLUME_MULT", 1.3)
 ORB_MIN_SL_PCT: float = _safe_float("ORB_MIN_SL_PCT", 0.06)
 ORB_MAX_SL_PCT: float = _safe_float("ORB_MAX_SL_PCT", 1.20)
 ORB_TP_RR: float = _safe_float("ORB_TP_RR", 2.0)
+# Opening-range breakout is only meaningful while the 09:15-09:30 range is still
+# the reference level. A "breakout" of it at midday is a stale-level trade — cap
+# the latest entry (the 12:22 BHARTIARTL ORB that prompted this).
+ORB_WINDOW_END: time = _safe_time("INDIA_ORB_WINDOW_END", time(11, 0))
 
 # --- evaluator geometry: VOLUME_SURGE_BREAKOUT / BREAKDOWN_SHORT (§10.4/§10.5)
 BDS_ENABLED: bool = _safe_bool("BDS_ENABLED", True)

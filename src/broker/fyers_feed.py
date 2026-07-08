@@ -151,6 +151,7 @@ class FyersDataFeed:
         )
 
         await self._seed_historical(now)
+        await self._seed_lot_sizes()
         self._start_websocket()
         self._oi_task = asyncio.create_task(self._poll_oi_loop())
 
@@ -189,6 +190,65 @@ class FyersDataFeed:
         if not self._running or self._http is None or not self._symbols:
             return
         await self._seed_historical(now or datetime.now(config.IST))
+        await self._seed_lot_sizes()
+
+    # ── REST: lot-size resolution (broker symbol master) ────────────────
+
+    async def _seed_lot_sizes(self) -> None:
+        """Resolve NSE F&O lot sizes from the Fyers symbol master (once/day).
+
+        Stock bases carry no static lot size, so their cards showed "lot 0" and
+        rupee P&L is impossible without it. The public symbol master lists the
+        NSE-mandated lot per underlying; we parse it once at seed. Best-effort:
+        on any failure the static INSTRUMENTS fallback stands (indices keep their
+        lots; stocks stay 0 until the next successful fetch). Not a hot path —
+        one fetch per day, off the scan/tick loop.
+        """
+        if self._http is None:
+            return
+        try:
+            resp = await self._http.get(
+                config.FYERS_SYMBOL_MASTER_URL, timeout=httpx.Timeout(60.0)
+            )
+            resp.raise_for_status()
+            lots = self._parse_lot_sizes(resp.text)
+            if lots:
+                config.set_resolved_lot_sizes(lots)
+                logger.info(
+                    "resolved lot sizes for {} F&O underlyings from symbol master",
+                    len(lots),
+                )
+            else:
+                logger.warning("symbol master returned no parseable lot sizes")
+        except httpx.HTTPError:
+            logger.opt(exception=True).warning(
+                "lot-size symbol master fetch failed — static fallback stands"
+            )
+
+    @staticmethod
+    def _parse_lot_sizes(csv_text: str) -> dict[str, int]:
+        """Extract ``{underlying_base: lot_size}`` for futures from the Fyers
+        NSE_FO symbol master.
+
+        Columns (0-indexed, no header): 3 = lot size, 9 = Fyers ticker,
+        13 = underlying base. Every expiry of an underlying shares its lot size,
+        so a plain last-wins dedup by base is correct.
+        """
+        out: dict[str, int] = {}
+        for line in csv_text.splitlines():
+            parts = line.split(",")
+            if len(parts) < 14:
+                continue
+            if not parts[9].endswith("FUT"):
+                continue
+            base = parts[13].strip().upper()
+            try:
+                lot = int(float(parts[3]))
+            except ValueError:
+                continue
+            if base and lot > 0:
+                out[base] = lot
+        return out
 
     # ── REST: historical seed ───────────────────────────────────────────
 

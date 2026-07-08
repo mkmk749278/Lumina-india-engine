@@ -58,6 +58,25 @@ def test_parse_history_candles_valid() -> None:
     assert candles[0].ts.tzinfo is not None
 
 
+def test_parse_lot_sizes_from_symbol_master() -> None:
+    # Real Fyers NSE_FO layout: col 3 = lot, col 9 = ticker, col 13 = underlying.
+    csv = (
+        "101126072861088,BANKNIFTY 28 Jul 26 FUT,11,30,0.2,,x,2026-07-07,"
+        "1785232800,NSE:BANKNIFTY26JULFUT,10,11,61088,BANKNIFTY,26009,-1.0\n"
+        "101126072861091,RELIANCE 28 Jul 26 FUT,11,500,0.05,,x,2026-07-07,"
+        "1785232800,NSE:RELIANCE26JULFUT,10,11,61091,RELIANCE,26037,-1.0\n"
+        # An option row (ticker not *FUT) is ignored.
+        "999,NIFTY 28 Jul 26 24000 CE,14,65,0.05,,x,2026-07-07,"
+        "1785232800,NSE:NIFTY26JUL24000CE,10,11,1,NIFTY,1,-1.0\n"
+    )
+    lots = FyersDataFeed._parse_lot_sizes(csv)
+    assert lots == {"BANKNIFTY": 30, "RELIANCE": 500}
+
+
+def test_parse_lot_sizes_skips_malformed_rows() -> None:
+    assert FyersDataFeed._parse_lot_sizes("too,few,cols\n\n") == {}
+
+
 def test_parse_history_candles_empty() -> None:
     assert FyersDataFeed._parse_history_candles([]) == []
 
