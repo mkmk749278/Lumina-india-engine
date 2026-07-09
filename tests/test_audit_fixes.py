@@ -138,6 +138,21 @@ def test_min_scalp_floor_tracks_round_trip_cost() -> None:
     assert config.min_scalp_points_for("BANKNIFTY", 52000.0) > 40.0
 
 
+def test_lot_size_for_resolution_order() -> None:
+    config._RESOLVED_LOT_SIZES.clear()
+    try:
+        # Static fallback for indices; 0 for a stock base before the master
+        # resolves (the "lot 0" the app was showing).
+        assert config.lot_size_for("NIFTY") == config.INSTRUMENTS["NIFTY"].lot_size
+        assert config.lot_size_for("RELIANCE") == 0
+        # Broker-resolved value wins; non-positive values never overwrite.
+        config.set_resolved_lot_sizes({"RELIANCE": 500, "JUNK": 0})
+        assert config.lot_size_for("RELIANCE") == 500
+        assert config.lot_size_for("JUNK") == 0
+    finally:
+        config._RESOLVED_LOT_SIZES.clear()
+
+
 # ── Stock-scaled thresholds ─────────────────────────────────────────────
 
 

@@ -85,7 +85,7 @@ class LiquiditySweepReversal(Evaluator):
         if rr < config.LSR_MIN_RR:
             return None
 
-        lot = config.INSTRUMENTS[ctx.base].lot_size if ctx.base in config.INSTRUMENTS else 0
+        lot = config.lot_size_for(ctx.base)
         return IndiaSignal(
             signal_id=str(uuid.uuid4()),
             symbol=ctx.symbol,
@@ -142,7 +142,7 @@ class LiquiditySweepReversal(Evaluator):
 
 
 def _lot_size(base: str) -> int:
-    return config.INSTRUMENTS[base].lot_size if base in config.INSTRUMENTS else 0
+    return config.lot_size_for(base)
 
 
 def _trend_matches(direction: str, regime: Regime) -> bool:
@@ -196,6 +196,13 @@ class OpeningRangeBreakout(Evaluator):
 
     def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
         if not self.enabled or not ctx.candles_5m or ctx.volume_avg_5m_20 <= 0:
+            return None
+        # The opening range stops being the relevant reference by late morning —
+        # don't fire a "breakout" of a stale 09:15-09:30 range at midday.
+        if (
+            ctx.scan_time_ist is not None
+            and ctx.scan_time_ist > config.ORB_WINDOW_END
+        ):
             return None
         orh, orl = ctx.opening_range_high, ctx.opening_range_low
         if orh is None or orl is None:
