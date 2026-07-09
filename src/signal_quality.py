@@ -341,9 +341,17 @@ def _entry_in_aligned_zone(
 
 
 def tier_for(confidence: float) -> str:
-    """Map a confidence score to its delivery tier (spec §13.1)."""
+    """Map a confidence score to its delivery tier (spec §13.1, IB14).
+
+    A+ / A / B — the three tiers the business rules and the app colour-code.
+    Before Session 15 the A band did not exist in code: everything from the
+    emit floor to 79 rendered as B, so the ₹999 plan's "A and B signals"
+    promise was unfulfillable.
+    """
     if confidence >= config.CONFIDENCE_A_PLUS:
         return Tier.A_PLUS
+    if confidence >= config.CONFIDENCE_A:
+        return Tier.A
     if confidence >= config.CONFIDENCE_EMIT_FLOOR:
         return Tier.B
     return Tier.FILTERED

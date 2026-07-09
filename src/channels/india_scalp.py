@@ -190,15 +190,23 @@ def _make_signal(
 
 
 class OpeningRangeBreakout(Evaluator):
-    """§10.2 — a 5m close breaks the 09:15-09:30 opening range with volume."""
+    """§10.2 — a 5m close breaks the 09:15-09:45 opening range with volume.
+
+    Only fires on a *locked* range (09:45+, IB17): before the lock the range
+    is still forming, and "breaking" a partial range is noise — live
+    2026-07-09 six ORB signals fired inside 09:15-09:16 against ~30 seconds
+    of range; every one hit SL.
+    """
 
     setup_class = SetupClass.OPENING_RANGE_BREAKOUT
 
     def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
         if not self.enabled or not ctx.candles_5m or ctx.volume_avg_5m_20 <= 0:
             return None
+        if not ctx.opening_range_locked:
+            return None
         # The opening range stops being the relevant reference by late morning —
-        # don't fire a "breakout" of a stale 09:15-09:30 range at midday.
+        # don't fire a "breakout" of a stale 09:15-09:45 range at midday.
         if (
             ctx.scan_time_ist is not None
             and ctx.scan_time_ist > config.ORB_WINDOW_END
@@ -218,9 +226,16 @@ class OpeningRangeBreakout(Evaluator):
         if vol_ratio < config.ORB_VOLUME_MULT:
             return None
         buf = ctx.atr14_5m * config.ORB_ATR_BUFFER_MULT
+        # Chase guard: if price has already run past the breakout level by more
+        # than MAX_CHASE_ATR, the printed entry is unfillable — skip, don't chase.
+        max_chase = ctx.atr14_5m * config.MAX_CHASE_ATR
         if current.close > orh + buf:
+            if current.close - (orh + buf) > max_chase:
+                return None
             return self._build(ctx, Direction.LONG, orh + buf, orl - buf, vol_ratio)
         if current.close < orl - buf:
+            if (orl - buf) - current.close > max_chase:
+                return None
             return self._build(ctx, Direction.SHORT, orl - buf, orh + buf, vol_ratio)
         return None
 
@@ -273,11 +288,15 @@ def _volume_breakout(
     if ctx.oi_change_15m_pct < config.VSB_OI_MIN_PCT:
         return None
     atr = ctx.atr14_5m
+    max_chase = atr * config.MAX_CHASE_ATR
     if direction == Direction.LONG:
         level = last_swing_high(ctx.candles_15m, lookback=config.VSB_SWING_LOOKBACK, width=1)
         if level is None or not (current.high > level and current.close > level):
             return None
         entry = level + atr * config.VSB_ENTRY_ATR_MULT
+        # Chase guard: price already ran past the stated entry — unfillable.
+        if current.close - entry > max_chase:
+            return None
         base_sl = level - atr * config.VSB_SL_ATR_MULT
         sl = min(current.open, base_sl) if current.open < level else base_sl
     else:
@@ -285,6 +304,8 @@ def _volume_breakout(
         if level is None or not (current.low < level and current.close < level):
             return None
         entry = level - atr * config.VSB_ENTRY_ATR_MULT
+        if entry - current.close > max_chase:
+            return None
         base_sl = level + atr * config.VSB_SL_ATR_MULT
         sl = max(current.open, base_sl) if current.open > level else base_sl
 
@@ -829,7 +850,11 @@ class FailedAuctionReclaim(Evaluator):
         n = len(ctx.candles_5m)
         if n < config.FAR_SL_LOOKBACK + 1 or ctx.volume_avg_5m_20 <= 0:
             return None
-        orh, orl = ctx.opening_range_high, ctx.opening_range_low
+        # OR levels only count once the range is locked (09:45, IB17) — a
+        # "failed auction" of a still-forming range is not a level trade.
+        # PDH/PDL are final from the previous session and always valid.
+        orh = ctx.opening_range_high if ctx.opening_range_locked else None
+        orl = ctx.opening_range_low if ctx.opening_range_locked else None
         current = ctx.candles_5m[-1]
         lookback = ctx.candles_5m[-config.FAR_SL_LOOKBACK - 1 : -1]
         vol_ratio = ctx.current_volume_ratio()
@@ -922,6 +947,15 @@ class DivergenceContinuation(Evaluator):
 
     Bearish divergence (price new high, RSI lower) → SHORT; bullish
     divergence (price new low, RSI higher) → LONG.
+
+    Tightened (Session 15) after live data showed this evaluator producing
+    48% of all emissions at a 15.6% win rate: any new extreme with a
+    marginally weaker RSI qualified — a condition that stays true bar after
+    bar in a steady drift and mass-fired against market-wide moves. A real
+    exhaustion divergence requires the *prior* extreme to have printed at a
+    stretched RSI (>= DIV_RSI_EXTREME for shorts, mirrored for longs), a
+    material RSI fade (>= DIV_MIN_RSI_MARGIN), and an actual rejection
+    candle at the new extreme — not merely a red/green close.
     """
 
     setup_class = SetupClass.DIVERGENCE_CONTINUATION
@@ -935,6 +969,7 @@ class DivergenceContinuation(Evaluator):
             return None
         closes = [c.close for c in ctx.candles_5m]
         current = ctx.candles_5m[-1]
+        prev = ctx.candles_5m[-2]
         recent = ctx.candles_5m[-lb:]
         prior_window = ctx.candles_5m[-(lb + lb) : -lb] if len(ctx.candles_5m) >= lb * 2 else []
 
@@ -942,6 +977,9 @@ class DivergenceContinuation(Evaluator):
             return None
 
         rsi_now = rsi(closes, 14)
+        rsi_extreme_high = config.DIV_RSI_EXTREME
+        rsi_extreme_low = 100.0 - config.DIV_RSI_EXTREME
+        margin = config.DIV_MIN_RSI_MARGIN
 
         prior_high_val = max(c.high for c in prior_window)
         current_high_val = max(c.high for c in recent)
@@ -955,9 +993,10 @@ class DivergenceContinuation(Evaluator):
         if (
             current_high_val > prior_high_val
             and rsi_at_prior_high is not None
-            and rsi_now < rsi_at_prior_high
+            and rsi_at_prior_high >= rsi_extreme_high
+            and rsi_now <= rsi_at_prior_high - margin
             and rsi_now > 40
-            and current.close < current.open
+            and is_bearish_rejection(current, prev)
         ):
             div_high = current_high_val
             return self._build(ctx, Direction.SHORT, current.close, div_high)
@@ -974,9 +1013,10 @@ class DivergenceContinuation(Evaluator):
         if (
             current_low_val < prior_low_val
             and rsi_at_prior_low is not None
-            and rsi_now > rsi_at_prior_low
+            and rsi_at_prior_low <= rsi_extreme_low
+            and rsi_now >= rsi_at_prior_low + margin
             and rsi_now < 60
-            and current.close > current.open
+            and is_bullish_rejection(current, prev)
         ):
             div_low = current_low_val
             return self._build(ctx, Direction.LONG, current.close, div_low)

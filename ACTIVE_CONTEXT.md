@@ -1,6 +1,6 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-09 (Session 14 — signal-quality overhaul: scoring rebudget, dependency pairs, structure/regime/volume fixes)
+**Last updated:** 2026-07-09 (Session 15 — live-outcome-driven fixes: gate-state persistence, warm-up, OR lock, DIV tightening, flood caps, A tier)
 
 ---
 
@@ -327,6 +327,74 @@ not the volume gates.
 
 ---
 
+## Session 15 — Live-outcome-driven signal fixes (2026-07-09, owner-directed)
+
+Owner supplied the first real performance exports (ops Strategy/Outcomes/
+Suppressed PDFs + the 2026-07-09 signals CSV) and asked: what's actually
+wrong, fix everything, and how much can we honestly scalp intraday.
+Branch `claude/indian-stock-signals-analysis-s5ny6v`. 365 engine tests green
+(24 new), ruff + mypy clean; ops 14 tests green.
+
+**What the live data showed (window 07-03..07-09, 82 signals, 72 resolved):**
+win rate 27.8%, PF 0.73, expectancy −0.054%/signal. A+ tier 0/4. LONGs 15.4%
+win. DIVERGENCE_CONTINUATION was 48% of all volume at 15.6% win; ORB 11%;
+LSR 0/5. 2026-07-09 alone emitted **40 signals (4× the daily cap)** in four
+bursts — 09:15, 11:00, 11:27, 12:42 — each an engine restart re-opening the
+in-memory daily budget; Jul-08 had literal duplicate emissions (same MAC
+signal twice at 57969.8). The 09:15 burst held all four A+ of the day (all
+SL) and six ORBs fired against ~30 seconds of "opening range".
+
+**Root causes fixed (engine):**
+1. **Gate state now survives restarts.** `GateChain.rehydrate()` rebuilds
+   daily caps / per-direction counts / cooldowns / direction-conflict windows
+   from `india_signals` at boot (`get_signals_today_for_gates`, ages computed
+   by SQLite so container-TZ mismatches can't skew windows). `main` no longer
+   calls `reset_day()` when booting straight into OPEN — only on the genuine
+   PRE_OPEN→OPEN transition. This alone removes ~3/4 of yesterday's volume.
+2. **Session warm-up gate** (`warmup_gate`, `INDIA_WARMUP_END` 09:30): no
+   emissions in the opening auction chaos; also stops the day's budget being
+   spent by 09:16.
+3. **ORB requires the locked 09:45 range** (`ctx.opening_range_locked`) and
+   respects a **chase guard** (`INDIA_MAX_CHASE_ATR` 0.5): entry a subscriber
+   cannot fill is not a signal. FAR's OR legs also wait for the lock (PDH/PDL
+   legs unaffected). VSB/BDS get the same chase guard.
+4. **DIVERGENCE_CONTINUATION tightened**: prior extreme must print RSI ≥ 60
+   (mirror ≤ 40), RSI fade ≥ 5 pts (`DIV_RSI_EXTREME`/`DIV_MIN_RSI_MARGIN`),
+   and the trigger bar must be a real rejection (pin/engulfing), not any
+   red/green close. Kills the "fires on every base for hours" behaviour.
+5. **`setup_flood_gate`** (`INDIA_MAX_PER_SETUP_PER_SCAN` 1): one market-wide
+   move → one best expression of a setup per scan, across sector groups (the
+   correlation-group gate only capped within a group).
+6. **`index_conflict_gate`**: a stock signal fighting a non-NEUTRAL proxy-index
+   intraday bias is suppressed (scoring alone didn't stop them; they cleared
+   the floor and lost). Indices exempt; `INDIA_INDEX_CONFLICT_GATE` to disable.
+7. **`sl_noise_gate`** (`INDIA_MIN_SL_ATR_MULT` 0.45): stops narrower than
+   0.45× ATR are inside one bar's noise — suppressed with telemetry. The live
+   SL_HIT cluster sat at 0.08–0.20% stops. Paired with SL ATR pads raised
+   0.3 → 0.5 (LSR/VSB/TPE/SRF/DIV/MAC) so geometry clears the gate naturally.
+   Watch QCB: its 0.1-pad squeeze stop may now suppress — telemetry will show.
+8. **A tier exists** (`INDIA_CONFIDENCE_A` 65): A+ ≥ 80, A ≥ 65, B ≥ floor.
+   IB14 and the app always assumed A+/A/B; the code only ever emitted A+/B.
+   Session summary gains `a_count` (in-place migration); ops Quality/Signals/
+   Strategy updated (A dropdown option, A column, badge style). App already
+   handled 'A' (blue) — no app change needed.
+
+**Honest intraday scalp math (recorded for owner):** at NIFTY ~24,000 the
+all-in round trip is ~14.4 pts (0.06%), so the engine's floors already imply:
+minimum viable TP1 ~22 pts (NIFTY) / ~48 pts (BANKNIFTY ~54k) / 0.10% stocks.
+A realistic winning scalp captures 0.10–0.25% net of costs; with 2R geometry
+the system breaks even near 35% win rate — the fixes target the failure modes
+that produced 27.8%, they do not change the cost reality. 3–6 signals/day of
+that quality is the honest goal, not 40.
+
+**Watch next sessions:** emission rate under warm-up + flood caps + DIV
+tightening (expect a sharp drop — that is intended); whether index-conflict
+suppressions line up with saved losses (check `/api/suppressed` vs what the
+market did); QCB starvation via sl_noise_gate telemetry; A-tier population
+(65–79 band) and whether A outperforms B as designed.
+
+---
+
 ## Session 14 — Signal-quality overhaul (2026-07-09, owner-directed)
 
 Owner instruction: "improve the signals quality drastically — scoring system,
@@ -404,6 +472,7 @@ tight — revisit with outcome data if two same-sector signals genuinely differ.
 
 | Session | Date | Key outcomes |
 |---|---|---|
+| 15 | 2026-07-09 | **Live-outcome-driven fixes** (see section above). First real performance data analysed (27.8% win, PF 0.73): restart bursts quadrupled the daily cap (gate-state rehydration added), ORB fired on 30s of range (09:45 lock), DIV mass-fire tightened, warm-up/flood/index-conflict/SL-noise gates added, chase guards, A tier created. 365 tests green. Owner-sign-off item (evaluator + gate changes). |
 | 14 | 2026-07-09 | **Signal-quality overhaul** (see section above). BOS/CHoCH + OB/FVG wired into scoring (were dead modules), dependency pairs (sector groups, proxy-index bias, alignment score, correlation-group + direction-conflict gates), TOD volume normalisation + building-bar pro-rating, regime EMA-separation floor, OI 4-quadrant matrix, 9-component score rebudget. 341 tests green. Owner-sign-off item (scoring model). |
 | 1 | 2026-07-01 | Market research complete. Full AI handover spec (27 parts). Architecture locked. CLAUDE.md + ACTIVE_CONTEXT.md. No Telegram. Standalone app. Fyers API v3. |
 | 2 | 2026-07-01 | Bootstrapped repos (PR #1 each). Engine skeleton: config, SessionManager, HolidayManager, ExpiryManager. 22 tests. |

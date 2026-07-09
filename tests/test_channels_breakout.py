@@ -82,8 +82,9 @@ def test_orb_range_too_tight_rejected() -> None:
 
 def test_vsb_long_breakout() -> None:
     vsb = VolumeSurgeBreakout()
-    # Wide bullish bar: opens below the swing high, closes well above it.
-    current = c(high=24040.0, low=23975.0, close=24035.0, volume=2500.0, open_=23980.0)
+    # Wide bullish bar: opens below the swing high, closes above it but within
+    # the chase guard (entry 24021.5, MAX_CHASE_ATR 0.5 x ATR 20 = 10 pts).
+    current = c(high=24040.0, low=23975.0, close=24030.0, volume=2500.0, open_=23980.0)
     ctx = make_context(
         regime_60m=Regime.TRENDING_UP,
         candles_5m=_c5(current),
@@ -130,7 +131,8 @@ def test_vsb_rejected_without_volume_surge() -> None:
 
 def test_bds_short_breakdown() -> None:
     bds = BreakdownShort()
-    current = c(high=24025.0, low=23960.0, close=23965.0, volume=2500.0, open_=24020.0)
+    # Closes below the swing low but within the chase guard of entry 23978.5.
+    current = c(high=24025.0, low=23960.0, close=23970.0, volume=2500.0, open_=24020.0)
     ctx = make_context(
         regime_60m=Regime.TRENDING_DOWN,
         candles_5m=_c5(current),

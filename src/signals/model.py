@@ -48,6 +48,7 @@ class SetupClass:
 
 class Tier:
     A_PLUS = "A+"
+    A = "A"
     B = "B"
     FILTERED = "FILTERED"
 
@@ -110,6 +111,10 @@ class IndiaContext:
     pcr_is_extreme_bullish: bool = False
     opening_range_high: float | None = None
     opening_range_low: float | None = None
+    # True once the 09:15-09:45 opening range is final (IB17). Evaluators that
+    # trade the range (ORB, FAR's OR legs) must not treat a still-forming
+    # partial range as a level — "breaking" 30 seconds of range is noise.
+    opening_range_locked: bool = False
     key_levels_extra: list[float] = field(default_factory=list)
     # Instrument identity + higher-timeframe candles the evaluators read.
     symbol: str = ""

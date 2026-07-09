@@ -39,6 +39,7 @@ from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
 from src.signal_router import IndiaSignalRouter
 from src.signal_store import (
+    get_signals_today_for_gates,
     get_unresolved_signals_today,
     init_tables,
     insert_outcome,
@@ -70,9 +71,12 @@ async def _run() -> None:
     scanner = IndiaScanner(ctx_builder, session, expiry)
     router = IndiaSignalRouter()
     monitor = IndiaTradeMonitor(tick)
-    monitor.resume(
-        await get_unresolved_signals_today(), datetime.now(config.IST)
-    )
+    boot_now = datetime.now(config.IST)
+    monitor.resume(await get_unresolved_signals_today(), boot_now)
+    # Restore today's emission state so a mid-session restart (deploys
+    # included) cannot re-open the daily budget or wipe cooldowns — the
+    # 2026-07-09 restart bursts quadrupled the daily cap.
+    scanner.rehydrate(await get_signals_today_for_gates(), boot_now)
 
     feed_kind = os.environ.get("DATA_FEED", "fyers").strip().lower()
     feed_active = [False]
@@ -211,9 +215,13 @@ async def _run() -> None:
 
             if state != prev_state:
                 logger.info("session state -> {}", state.value)
+                # Reset only on the genuine daily-open transition. A boot
+                # straight into OPEN (mid-session restart) must NOT reset —
+                # the gate chain was just rehydrated from today's persisted
+                # emissions, and wiping it re-opens the daily budget.
                 if (
                     state == SessionState.OPEN
-                    and prev_state in (SessionState.PRE_OPEN, None)
+                    and prev_state == SessionState.PRE_OPEN
                 ):
                     scanner.reset_day()
                     persisted_suppressions = 0
