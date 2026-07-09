@@ -7,7 +7,10 @@ QUIET). This module is the single source of that label.
 Heuristic (tunable, deliberately conservative):
   1. Too little history → RANGING (never claim a trend we can't see).
   2. ATR% below ``REGIME_QUIET_ATR_PCT`` → QUIET (low volatility).
-  3. Fast EMA above slow EMA and price above fast EMA → TRENDING_UP; mirror →
+  3. EMA separation below ``REGIME_MIN_EMA_SEP_ATR`` × ATR → RANGING. A flat
+     EMA stack that happens to be ordered is chop, not trend — labelling it
+     TRENDING fed the trend evaluators and the 15-pt regime score on noise.
+  4. Fast EMA above slow EMA and price above fast EMA → TRENDING_UP; mirror →
      TRENDING_DOWN; otherwise RANGING.
 """
 
@@ -43,6 +46,8 @@ def classify(candles: Sequence[Candle], fast: int = 21, slow: int = 55) -> Regim
         return Regime.QUIET
     fast_ema = ema(closes, fast)
     slow_ema = ema(closes, slow)
+    if abs(fast_ema - slow_ema) < atr_value * config.REGIME_MIN_EMA_SEP_ATR:
+        return Regime.RANGING
     if fast_ema > slow_ema and last > fast_ema:
         return Regime.TRENDING_UP
     if fast_ema < slow_ema and last < fast_ema:

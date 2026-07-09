@@ -8,6 +8,12 @@ BOS (Break Of Structure) is a continuation break; CHoCH (Change of CHaracter)
 is a break against the prevailing swing sequence — the first sign of reversal.
 The trend read is intentionally simple (last two confirmed highs and lows) and
 tunable; it is a first implementation, not a final SMC model.
+
+``detect_structure`` classifies only the latest close. ``last_structure_event``
+is the persistent form the scorer consumes: the most recent BOS/CHoCH within a
+recent-bar window, each bar judged against only the swings that were confirmed
+at that bar (no lookahead) — so an aligned break a few bars back still counts
+as live structure bias instead of vanishing on the very next scan.
 """
 
 from __future__ import annotations
@@ -34,7 +40,14 @@ class StructureEvent(StrEnum):
 
 
 def find_swings(candles: Sequence[Candle], width: int = 2) -> list[Swing]:
-    """All fractal swing highs/lows with ``width`` confirming bars each side."""
+    """All fractal swing highs/lows with ``width`` confirming bars each side.
+
+    Comparison is strict against the bars *before* the pivot and >= against the
+    bars *after* it, so an exact double-top/bottom (equal highs are routine at
+    NSE round numbers) still registers one swing at its first bar instead of
+    disappearing entirely — a fully strict fractal is blind to the very
+    liquidity levels the sweep evaluators trade.
+    """
     if width < 1:
         raise ValueError("find_swings: width must be >= 1")
     swings: list[Swing] = []
@@ -42,12 +55,12 @@ def find_swings(candles: Sequence[Candle], width: int = 2) -> list[Swing]:
         high = candles[i].high
         low = candles[i].low
         if all(
-            high > candles[i - j].high and high > candles[i + j].high
+            high > candles[i - j].high and high >= candles[i + j].high
             for j in range(1, width + 1)
         ):
             swings.append(Swing(i, high, True))
         if all(
-            low < candles[i - j].low and low < candles[i + j].low
+            low < candles[i - j].low and low <= candles[i + j].low
             for j in range(1, width + 1)
         ):
             swings.append(Swing(i, low, False))
@@ -88,4 +101,33 @@ def detect_structure(
         return StructureEvent.CHOCH_UP if trend_down else StructureEvent.BOS_UP
     if last_close < lows[-1].price:
         return StructureEvent.CHOCH_DOWN if trend_up else StructureEvent.BOS_DOWN
+    return None
+
+
+def last_structure_event(
+    candles: Sequence[Candle], width: int = 2, lookback: int = 12
+) -> StructureEvent | None:
+    """Most recent BOS/CHoCH within the last ``lookback`` bars, or ``None``.
+
+    Walks backwards from the newest bar; each bar's close is judged only
+    against swings already confirmed at that bar (``swing.index <= i - width``),
+    so a break is attributed to the bar where it actually happened. The newest
+    matching bar wins — that is the market's current structure state.
+    """
+    swings = find_swings(candles, width)
+    if not swings:
+        return None
+    n = len(candles)
+    for i in range(n - 1, max(width, n - lookback) - 1, -1):
+        highs = [s for s in swings if s.is_high and s.index <= i - width]
+        lows = [s for s in swings if not s.is_high and s.index <= i - width]
+        if len(highs) < 2 or len(lows) < 2:
+            continue
+        close = candles[i].close
+        trend_up = highs[-1].price > highs[-2].price and lows[-1].price > lows[-2].price
+        trend_down = highs[-1].price < highs[-2].price and lows[-1].price < lows[-2].price
+        if close > highs[-1].price:
+            return StructureEvent.CHOCH_UP if trend_down else StructureEvent.BOS_UP
+        if close < lows[-1].price:
+            return StructureEvent.CHOCH_DOWN if trend_up else StructureEvent.BOS_DOWN
     return None

@@ -13,6 +13,7 @@ from config import INSTRUMENTS, IST
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
+from src.market_profile import tod_adjusted_volume_ratio
 from src.regime import Regime, classify
 from src.session.expiry_manager import ExpiryManager
 from src.signals.model import IndiaContext
@@ -92,6 +93,7 @@ class IndiaContextBuilder:
             candles_60m=candles_60m,
             volume_avg_5m_20=self._tick.get_volume_avg(symbol, "5m", 20),
             volume_avg_15m_20=self._tick.get_volume_avg(symbol, "15m", 20),
+            volume_ratio_tod=tod_adjusted_volume_ratio(candles_5m, scan_time),
             atr14_5m=atr14,
             prev_day_high=self._prev_high.get(symbol, 0.0),
             prev_day_low=self._prev_low.get(symbol, 0.0),

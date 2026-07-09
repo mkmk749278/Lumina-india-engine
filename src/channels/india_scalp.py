@@ -42,7 +42,7 @@ class LiquiditySweepReversal(Evaluator):
             return None
 
         sweep = ctx.candles_5m[-1]
-        if sweep.volume < config.LSR_VOLUME_MULT * ctx.volume_avg_5m_20:
+        if ctx.current_volume_ratio() < config.LSR_VOLUME_MULT:
             return None
 
         swing_low = last_swing_low(
@@ -214,7 +214,7 @@ class OpeningRangeBreakout(Evaluator):
         or_range_pct = (orh - orl) / last_price * 100.0
         if not (config.ORB_MIN_RANGE_PCT <= or_range_pct <= config.ORB_MAX_RANGE_PCT):
             return None
-        vol_ratio = current.volume / ctx.volume_avg_5m_20
+        vol_ratio = ctx.current_volume_ratio()
         if vol_ratio < config.ORB_VOLUME_MULT:
             return None
         buf = ctx.atr14_5m * config.ORB_ATR_BUFFER_MULT
@@ -267,7 +267,7 @@ def _volume_breakout(
     if not ctx.candles_5m or len(ctx.candles_15m) < 3 or ctx.volume_avg_5m_20 <= 0:
         return None
     current = ctx.candles_5m[-1]
-    vol_ratio = current.volume / ctx.volume_avg_5m_20
+    vol_ratio = ctx.current_volume_ratio()
     if vol_ratio < config.VSB_VOLUME_MULT:
         return None
     if ctx.oi_change_15m_pct < config.VSB_OI_MIN_PCT:
@@ -832,7 +832,7 @@ class FailedAuctionReclaim(Evaluator):
         orh, orl = ctx.opening_range_high, ctx.opening_range_low
         current = ctx.candles_5m[-1]
         lookback = ctx.candles_5m[-config.FAR_SL_LOOKBACK - 1 : -1]
-        vol_ratio = current.volume / ctx.volume_avg_5m_20
+        vol_ratio = ctx.current_volume_ratio()
 
         if vol_ratio < config.FAR_VOLUME_MULT:
             return None
@@ -1067,7 +1067,7 @@ class QuietCompressionBreak(Evaluator):
 
         closes = [c.close for c in ctx.candles_5m]
         current = ctx.candles_5m[-1]
-        vol_ratio = current.volume / ctx.volume_avg_5m_20
+        vol_ratio = ctx.current_volume_ratio()
         if vol_ratio < config.QCB_VOLUME_MULT:
             return None
 

@@ -5,6 +5,9 @@ base, builds an ``IndiaContext``, runs all enabled evaluators, gates
 candidates, scores survivors, then emits highest-confidence-first under
 the per-scan / per-day / per-direction caps.
 
+Contexts for the whole universe are built first, the index contexts anchor a
+per-base ``index_bias`` (src/dependency.py), then evaluators run per base.
+
 Pre-score gates (spec §9):
   1. session_gate — market hours?
   2. spread_gate — bid-ask too wide? (Phase 2 — always pass in Phase 1)
@@ -20,7 +23,13 @@ Post-score:
 
 Emission stage (highest confidence first across the whole scan):
   10. duplicate_direction_gate — same-direction cap per base per day
-  11. scan_cap_gate / daily_cap_gate — universe-wide emission budget
+  11. direction_conflict_gate — no opposite-direction signal on a base
+      minutes after one was emitted (whipsawing subscribers is worse
+      than missing a genuine V-reversal)
+  12. correlation_group_gate — same-direction cap per sector group per
+      scan: one index move validates several near-identical correlated
+      setups at once; subscribers get the best one, not three copies
+  13. scan_cap_gate / daily_cap_gate — universe-wide emission budget
       (46 bases × 2 directions would otherwise allow ~184 signals/day)
 
 Every gate rejection is logged with gate name + reason (suppression
@@ -34,6 +43,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import config
+from src import dependency
 from src.channels import (
     BreakdownShort,
     DivergenceContinuation,
@@ -87,6 +97,16 @@ _MAX_PER_DIRECTION: int = config._safe_int("INDIA_MAX_SIGNALS_PER_DIRECTION", 2)
 # get the best few, not a flood. Both env-overridable.
 _MAX_PER_SCAN: int = config._safe_int("INDIA_MAX_SIGNALS_PER_SCAN", 3)
 _MAX_PER_DAY: int = config._safe_int("INDIA_MAX_SIGNALS_PER_DAY", 10)
+# ATR floor for index bases as % of price — the 3.0 absolute-point floor is
+# 0.01% of NIFTY and effectively never fired; the % floor keeps a genuinely
+# dead session (no tradeable range) from emitting geometry built on noise.
+_MIN_ATR_PCT_INDEX: float = config._safe_float("INDIA_MIN_ATR_PCT_INDEX", 0.02)
+# Same-direction emissions allowed per correlation group per scan.
+_MAX_PER_GROUP_PER_SCAN: int = config._safe_int("INDIA_MAX_PER_GROUP_PER_SCAN", 1)
+# An opposite-direction signal on the same base within this many minutes of an
+# emission is suppressed — one of the two calls is wrong, and flip-flopping a
+# subscriber inside half an hour costs trust either way.
+_CONFLICT_WINDOW_MIN: int = config._safe_int("INDIA_CONFLICT_WINDOW_MIN", 30)
 
 
 # ── Gate result ──────────────────────────────────────────────────────
@@ -114,6 +134,14 @@ class GateChain:
         self._emitted_today: Counter[tuple[str, str]] = Counter()
         self._emitted_total_today = 0
         self._suppressions: list[Suppression] = []
+        # base -> (direction, ts) of its latest emission (direction-conflict gate).
+        self._last_base_emission: dict[str, tuple[str, datetime]] = {}
+        # (correlation group, direction) -> emissions this scan (group cap).
+        self._group_dir_this_scan: Counter[tuple[str, str]] = Counter()
+
+    def begin_scan(self) -> None:
+        """Reset the per-scan correlation-group counters. Called once per scan."""
+        self._group_dir_this_scan.clear()
 
     def _suppress(
         self,
@@ -195,13 +223,40 @@ class GateChain:
         emitted_this_scan: int,
     ) -> str | None:
         """Emission-stage gates, run highest-confidence-first per scan:
-        per-direction daily cap, per-scan cap, universe-wide daily cap."""
+        per-direction daily cap, direction-conflict window, correlation-group
+        cap, per-scan cap, universe-wide daily cap."""
         count = self._emitted_today[(ctx.base, signal.direction)]
         if count >= _MAX_PER_DIRECTION:
             return self._suppress(
                 "duplicate_direction_gate",
                 f"{signal.direction} on {ctx.base} already emitted {count}x"
                 f" today (cap {_MAX_PER_DIRECTION})",
+                signal,
+                ctx,
+                now,
+            )
+        last = self._last_base_emission.get(ctx.base)
+        if last is not None:
+            last_dir, last_ts = last
+            elapsed_min = (now - last_ts).total_seconds() / 60.0
+            if last_dir != signal.direction and elapsed_min < _CONFLICT_WINDOW_MIN:
+                return self._suppress(
+                    "direction_conflict_gate",
+                    f"{last_dir} emitted on {ctx.base} {elapsed_min:.0f}m ago —"
+                    f" opposite {signal.direction} blocked for"
+                    f" {_CONFLICT_WINDOW_MIN}m (no whipsaw)",
+                    signal,
+                    ctx,
+                    now,
+                )
+        group = dependency.group_for(ctx.base)
+        group_count = self._group_dir_this_scan[(group, signal.direction)]
+        if group_count >= _MAX_PER_GROUP_PER_SCAN:
+            return self._suppress(
+                "correlation_group_gate",
+                f"{group} group already emitted {group_count} {signal.direction}"
+                f" this scan (cap {_MAX_PER_GROUP_PER_SCAN} — correlated setups"
+                f" compete, best confidence wins)",
                 signal,
                 ctx,
                 now,
@@ -233,12 +288,16 @@ class GateChain:
         self._last_fire[key] = now
         self._emitted_today[(base, direction)] += 1
         self._emitted_total_today += 1
+        self._last_base_emission[base] = (direction, now)
+        self._group_dir_this_scan[(dependency.group_for(base), direction)] += 1
 
     def reset_day(self) -> None:
         self._last_fire.clear()
         self._emitted_today.clear()
         self._emitted_total_today = 0
         self._suppressions.clear()
+        self._last_base_emission.clear()
+        self._group_dir_this_scan.clear()
 
     @property
     def suppressions(self) -> list[Suppression]:
@@ -320,14 +379,19 @@ class GateChain:
         session_state: SessionState,
         now: datetime,
     ) -> str | None:
-        # Index bases: absolute-point floor. Stock bases: % of price (a fixed
-        # point floor either suppresses every cheap stock or is meaningless
-        # on an expensive one).
-        if ctx.base in config.INSTRUMENTS:
-            if ctx.atr14_5m < _MIN_ATR_POINTS:
-                return f"ATR {ctx.atr14_5m:.1f} < {_MIN_ATR_POINTS} minimum"
-            return None
+        # Index bases: the larger of the absolute-point floor and a % of price
+        # (3.0 points alone is 0.01% of NIFTY — it never fired). Stock bases:
+        # % of price (a fixed point floor either suppresses every cheap stock
+        # or is meaningless on an expensive one).
         last = ctx.candles_5m[-1].close if ctx.candles_5m else 0.0
+        if ctx.base in config.INSTRUMENTS:
+            floor = max(_MIN_ATR_POINTS, last * _MIN_ATR_PCT_INDEX / 100.0)
+            if ctx.atr14_5m < floor:
+                return (
+                    f"ATR {ctx.atr14_5m:.1f} < {floor:.1f} minimum"
+                    f" (max of {_MIN_ATR_POINTS} pts, {_MIN_ATR_PCT_INDEX}%)"
+                )
+            return None
         floor = last * _MIN_ATR_PCT / 100.0
         if last > 0 and ctx.atr14_5m < floor:
             return (
@@ -442,18 +506,37 @@ class IndiaScanner:
         if session_state != SessionState.OPEN and not config.INDIA_DEV_MODE:
             return []
 
-        scored: list[tuple[IndiaSignal, IndiaContext]] = []
+        self._gates.begin_scan()
 
+        # Pass 1 — build every context, then anchor each base to its proxy
+        # index's intraday bias (dependency pairs). Index contexts must exist
+        # before any stock is evaluated, so this cannot fold into the eval loop.
+        contexts: dict[str, IndiaContext] = {}
         for base, symbol in symbols.items():
             if base not in config.ALLOWED_BASES:
                 continue
-
             ctx = self._ctx_builder.build(symbol, base, now)
-
             if not ctx.candles_5m:
                 logger.debug("skip {} — no 5m candles", base)
                 continue
+            contexts[base] = ctx
 
+        index_biases = {
+            base: dependency.market_bias(ctx)
+            for base, ctx in contexts.items()
+            if base in config.INDEX_BASES
+        }
+        for base, ctx in contexts.items():
+            for proxy in dependency.proxy_candidates(base):
+                bias = index_biases.get(proxy)
+                if bias is not None:
+                    ctx.index_bias = bias
+                    break
+
+        scored: list[tuple[IndiaSignal, IndiaContext]] = []
+
+        # Pass 2 — evaluate, gate, and score every base.
+        for base, ctx in contexts.items():
             is_index = base in config.INDEX_BASES
 
             for ev in self._evaluators:

@@ -1,35 +1,59 @@
-"""Confidence scoring (spec §11) — the 8-component, 0–100 model.
+"""Confidence scoring — the 9-component, 0–100 model.
 
-OWNER-SIGN-OFF ITEM (CLAUDE.md): this is the evaluator scoring model. It is a
-faithful port of spec §11.2–11.9, adapted to the engine's typed ``Candle`` list
-(the spec's pseudocode assumed pandas). No auto-merge.
+OWNER-SIGN-OFF ITEM (CLAUDE.md): this is the evaluator scoring model. No
+auto-merge. Rebuilt in the signal-quality overhaul (owner-directed) from the
+spec §11 8-component port:
 
-Components (max): regime 20, htf 15, volume 15, rr 15, level-confluence 10,
-oi 10, vix/pcr 10, structure 5 → 100. Emit >= floor; A+ >= A-plus cutoff.
+Component budget (max, total 100):
+  regime alignment   15  (was 20 — regime now needs real EMA separation, so a
+                          trend label is rarer and more reliable; 20 let one
+                          input dominate)
+  HTF (daily)        12  (was 15)
+  volume             15  (now time-of-day normalised + building-bar pro-rated)
+  risk:reward        15  (net of round-trip cost — unchanged from Session 11)
+  level confluence   10  (now also counts unmitigated order blocks / FVGs)
+  OI positioning     10  (proper 4-quadrant buildup matrix, direction-aware)
+  VIX / PCR           8  (was 10)
+  market structure   10  (was 5 — now scores actual BOS/CHoCH alignment on 15m
+                          plus ATR normality; before it was ATR normality only
+                          and the structure_state module was never consumed)
+  index alignment     5  (new — dependency pairs: signal direction vs the
+                          proxy index's intraday bias)
+
+Emit >= floor; A+ >= A-plus cutoff (config).
 """
 
 from __future__ import annotations
 
 import config
+from src.dependency import NEUTRAL
+from src.order_blocks import find_fvgs, find_order_blocks, unmitigated
 from src.regime import Regime
 from src.signals.model import Direction, IndiaContext, IndiaSignal, SetupClass, Tier
+from src.structure_state import StructureEvent, last_structure_event
 
-# setup_class -> (aligned, neutral, opposing) regime affinity points.
+# How many recent 15m bars a BOS/CHoCH stays live as structure bias.
+STRUCTURE_LOOKBACK: int = config._safe_int("INDIA_STRUCTURE_LOOKBACK", 12)
+# 15m window mined for unmitigated order blocks / FVGs (one session ≈ 25 bars;
+# zones older than ~1.5 sessions are stale as intraday confluence).
+ZONE_WINDOW_BARS: int = config._safe_int("INDIA_ZONE_WINDOW_BARS", 40)
+
+# setup_class -> (aligned, neutral, opposing) regime affinity points (max 15).
 REGIME_AFFINITY: dict[str, tuple[int, int, int]] = {
-    SetupClass.LIQUIDITY_SWEEP_REVERSAL: (18, 12, 8),
-    SetupClass.OPENING_RANGE_BREAKOUT: (16, 14, 8),
-    SetupClass.TREND_PULLBACK_EMA: (20, 8, 0),
-    SetupClass.VOLUME_SURGE_BREAKOUT: (14, 14, 10),
-    SetupClass.BREAKDOWN_SHORT: (14, 14, 10),
-    SetupClass.SR_FLIP_RETEST: (16, 12, 8),
-    SetupClass.INDIA_VIX_EXTREME: (10, 10, 10),
-    SetupClass.PCR_EXTREME: (10, 10, 10),
-    SetupClass.FAILED_AUCTION_RECLAIM: (18, 12, 8),
-    SetupClass.DIVERGENCE_CONTINUATION: (16, 12, 8),
-    SetupClass.QUIET_COMPRESSION_BREAK: (14, 14, 10),
-    SetupClass.MA_CROSS_TREND_SHIFT: (16, 14, 0),
-    SetupClass.OI_SPIKE_REVERSAL: (14, 12, 8),
-    SetupClass.EXPIRY_GAMMA_SQUEEZE: (12, 12, 12),
+    SetupClass.LIQUIDITY_SWEEP_REVERSAL: (13, 9, 6),
+    SetupClass.OPENING_RANGE_BREAKOUT: (12, 10, 6),
+    SetupClass.TREND_PULLBACK_EMA: (15, 6, 0),
+    SetupClass.VOLUME_SURGE_BREAKOUT: (11, 10, 8),
+    SetupClass.BREAKDOWN_SHORT: (11, 10, 8),
+    SetupClass.SR_FLIP_RETEST: (12, 9, 6),
+    SetupClass.INDIA_VIX_EXTREME: (8, 8, 8),
+    SetupClass.PCR_EXTREME: (8, 8, 8),
+    SetupClass.FAILED_AUCTION_RECLAIM: (13, 9, 6),
+    SetupClass.DIVERGENCE_CONTINUATION: (12, 9, 6),
+    SetupClass.QUIET_COMPRESSION_BREAK: (11, 10, 8),
+    SetupClass.MA_CROSS_TREND_SHIFT: (12, 10, 0),
+    SetupClass.OI_SPIKE_REVERSAL: (11, 9, 6),
+    SetupClass.EXPIRY_GAMMA_SQUEEZE: (9, 9, 9),
 }
 
 _BREAKOUT_SETUPS = {
@@ -68,12 +92,13 @@ class IndiaSignalScoringEngine:
             + self._score_oi(signal, ctx)
             + self._score_vix_pcr(signal, ctx)
             + self._score_structure(signal, ctx)
+            + self._score_index_alignment(signal, ctx)
         )
         return min(100.0, max(0.0, total))
 
     @staticmethod
     def _score_regime(signal: IndiaSignal, ctx: IndiaContext) -> float:
-        aligned, neutral, opposing = REGIME_AFFINITY.get(signal.setup_class, (14, 12, 8))
+        aligned, neutral, opposing = REGIME_AFFINITY.get(signal.setup_class, (11, 9, 6))
         regime = ctx.regime_60m
         if signal.direction == Direction.LONG:
             if regime is Regime.TRENDING_UP:
@@ -90,23 +115,26 @@ class IndiaSignalScoringEngine:
     @staticmethod
     def _score_htf(signal: IndiaSignal, ctx: IndiaContext) -> float:
         if signal.htf_trend_aligned:
-            return 15.0
+            return 12.0
         if signal.direction == Direction.LONG and ctx.regime_daily is Regime.TRENDING_UP:
-            return 10.0
-        if signal.direction == Direction.SHORT and ctx.regime_daily is Regime.TRENDING_DOWN:
-            return 10.0
-        if ctx.regime_daily in _RANGING_QUIET:
             return 8.0
-        return 4.0
+        if signal.direction == Direction.SHORT and ctx.regime_daily is Regime.TRENDING_DOWN:
+            return 8.0
+        if ctx.regime_daily in _RANGING_QUIET:
+            return 6.0
+        return 3.0
 
     @staticmethod
     def _score_volume(signal: IndiaSignal, ctx: IndiaContext) -> float:
+        # Ratios are time-of-day normalised where the context provides it
+        # (src/market_profile.py): 1.0 = normal *for this session phase*, so a
+        # midday 1.5 is a real surge and an opening 1.5 is just the open.
         if signal.setup_class in _BREAKOUT_SETUPS and signal.breakout_volume_ratio > 0:
             ratio = signal.breakout_volume_ratio
-        elif ctx.candles_5m and ctx.volume_avg_5m_20 > 0:
-            ratio = ctx.candles_5m[-1].volume / ctx.volume_avg_5m_20
         else:
-            return 8.0
+            ratio = ctx.current_volume_ratio()
+            if ratio <= 0:
+                return 8.0
         if ratio >= 3.0:
             return 15.0
         if ratio >= 2.0:
@@ -166,6 +194,12 @@ class IndiaSignalScoringEngine:
         confluences = sum(
             1 for lvl in key_levels if lvl is not None and abs(entry - lvl) <= tolerance
         )
+        # An unmitigated order block / FVG on the 15m whose zone the entry sits
+        # in (or within tolerance of) is a genuine institutional footprint —
+        # count it as one more confluence. Direction-aware: bullish zones back
+        # LONGs, bearish zones back SHORTs.
+        if _entry_in_aligned_zone(signal, ctx, tolerance):
+            confluences += 1
         if confluences >= 3:
             return 10.0
         if confluences == 2:
@@ -176,58 +210,134 @@ class IndiaSignalScoringEngine:
 
     @staticmethod
     def _score_oi(signal: IndiaSignal, ctx: IndiaContext) -> float:
+        """Classic F&O positioning matrix over price change x OI change:
+
+            price up   + OI up   = long buildup    -> backs LONG
+            price down + OI up   = short buildup   -> backs SHORT
+            price up   + OI down = short covering  -> weakly backs LONG
+            price down + OI down = long unwinding  -> weakly backs SHORT
+
+        The old component paid 7/10 for any rising OI regardless of which side
+        was building — an OI surge *against* the signal scored nearly as well
+        as one confirming it.
+        """
         oi_chg = ctx.oi_change_15m_pct
         if len(ctx.candles_5m) >= 3:
             ref = ctx.candles_5m[-3].close
-            price_rising = ref != 0 and (ctx.candles_5m[-1].close - ref) > 0
+            price_delta = ctx.candles_5m[-1].close - ref if ref != 0 else 0.0
         else:
-            price_rising = False
-        oi_rising = oi_chg > 0.5
-        if signal.direction == Direction.LONG and oi_rising and price_rising:
-            return 10.0
-        if signal.direction == Direction.SHORT and oi_rising and not price_rising:
-            return 10.0
-        if oi_chg > 0.2:
-            return 7.0
-        if abs(oi_chg) < 0.2:
+            price_delta = 0.0
+
+        if abs(oi_chg) < 0.2 or price_delta == 0.0:
             return 5.0
-        return 3.0
+
+        price_up = price_delta > 0
+        oi_up = oi_chg > 0
+        if oi_up and price_up:  # long buildup
+            return 10.0 if signal.direction == Direction.LONG else 0.0
+        if oi_up and not price_up:  # short buildup
+            return 10.0 if signal.direction == Direction.SHORT else 0.0
+        if not oi_up and price_up:  # short covering
+            return 6.0 if signal.direction == Direction.LONG else 3.0
+        # long unwinding
+        return 6.0 if signal.direction == Direction.SHORT else 3.0
 
     @staticmethod
     def _score_vix_pcr(signal: IndiaSignal, ctx: IndiaContext) -> float:
-        score = 5.0
+        score = 4.0
         # vix == 0.0 means "no VIX reading yet", not "record-low vol" — no bonus.
         if 0 < ctx.india_vix < 14 and signal.setup_class in _LOW_VIX_FAVOURED:
             score += 2.0
         elif ctx.india_vix > 18 and signal.setup_class in _HIGH_VIX_FAVOURED:
             score += 2.0
         if signal.direction == Direction.LONG and ctx.pcr_is_extreme_bearish:
-            score += 3.0
+            score += 2.0
         if signal.direction == Direction.SHORT and ctx.pcr_is_extreme_bullish:
-            score += 3.0
+            score += 2.0
         if signal.direction == Direction.SHORT and ctx.pcr_is_extreme_bearish:
             score -= 2.0
-        return min(10.0, max(0.0, score))
+        if signal.direction == Direction.LONG and ctx.pcr_is_extreme_bullish:
+            score -= 2.0
+        return min(8.0, max(0.0, score))
 
     @staticmethod
     def _score_structure(signal: IndiaSignal, ctx: IndiaContext) -> float:
-        # Volatility-normality score: ATR as % of price against the typical
-        # 5m band for the instrument class (indices run far tighter than
-        # single stocks). Absolute-point baselines only made sense for the
-        # two original indices.
+        """BOS/CHoCH alignment on the 15m (0–7) + ATR normality (0–3).
+
+        A live break of structure in the signal's direction is the strongest
+        confirmation SMC offers: BOS = continuation the signal rides, CHoCH =
+        the first reversal print (slightly less established). A live break
+        *against* the signal means it is fading fresh displacement — 0.
+        """
+        event = (
+            last_structure_event(
+                ctx.candles_15m, width=2, lookback=STRUCTURE_LOOKBACK
+            )
+            if len(ctx.candles_15m) >= 7
+            else None
+        )
+        long = signal.direction == Direction.LONG
+        if event is None:
+            structure = 3.0
+        elif event is (StructureEvent.BOS_UP if long else StructureEvent.BOS_DOWN):
+            structure = 7.0
+        elif event is (StructureEvent.CHOCH_UP if long else StructureEvent.CHOCH_DOWN):
+            structure = 5.0
+        else:
+            structure = 0.0
+
+        # Volatility-normality: ATR as % of price against the typical 5m band
+        # for the instrument class. Dead tape and panic tape both trade worse
+        # than the middle of the band.
         last = ctx.candles_5m[-1].close if ctx.candles_5m else 0.0
         if last <= 0:
-            return 2.0
-        atr_pct = ctx.atr14_5m / last * 100.0
-        baseline = 0.035 if ctx.base in config.INDEX_BASES else 0.12
-        atr_ratio = atr_pct / baseline
-        if atr_ratio < 0.5:
-            return 2.0
-        if atr_ratio > 3.0:
-            return 1.0
-        if 0.8 <= atr_ratio <= 2.0:
-            return 5.0
-        return 3.0
+            atr_score = 1.0
+        else:
+            atr_pct = ctx.atr14_5m / last * 100.0
+            baseline = 0.035 if ctx.base in config.INDEX_BASES else 0.12
+            atr_ratio = atr_pct / baseline
+            if atr_ratio > 3.0:
+                atr_score = 0.0
+            elif 0.8 <= atr_ratio <= 2.0:
+                atr_score = 3.0
+            elif atr_ratio < 0.5:
+                atr_score = 1.0
+            else:
+                atr_score = 2.0
+        return structure + atr_score
+
+    @staticmethod
+    def _score_index_alignment(signal: IndiaSignal, ctx: IndiaContext) -> float:
+        """Dependency pairs: signal direction vs the proxy index's intraday
+        bias (stamped by the scanner). Fighting the anchor index intraday is
+        the single most common way an otherwise clean stock setup fails."""
+        if ctx.index_bias == NEUTRAL:
+            return 3.0
+        return 5.0 if ctx.index_bias == signal.direction else 0.0
+
+
+def _entry_in_aligned_zone(
+    signal: IndiaSignal, ctx: IndiaContext, tolerance: float
+) -> bool:
+    """True if entry sits in/near an unmitigated 15m OB or FVG backing the
+    signal's direction.
+
+    Zones and their mitigation are judged on the bars *before* the current
+    one: the signal bar tapping into a fresh zone is the entry itself — it
+    must not count as the mitigation that disqualifies the zone.
+    """
+    window = ctx.candles_15m[-ZONE_WINDOW_BARS:-1]
+    if len(window) < 3:
+        return False
+    zones = unmitigated(
+        [*find_order_blocks(window), *find_fvgs(window)], window
+    )
+    want_bullish = signal.direction == Direction.LONG
+    return any(
+        z.bullish == want_bullish
+        and (z.bottom - tolerance) <= signal.entry <= (z.top + tolerance)
+        for z in zones
+    )
 
 
 def tier_for(confidence: float) -> str:

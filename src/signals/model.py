@@ -129,3 +129,19 @@ class IndiaContext:
     max_pain_strike: float | None = None
     # 15m volume average for MA_CROSS volume gate.
     volume_avg_15m_20: float = 0.0
+    # Time-of-day normalised + building-bar pro-rated volume ratio for the
+    # newest 5m bar (src/market_profile.py). 0.0 = unavailable; consumers use
+    # ``current_volume_ratio()`` which falls back to the raw ratio.
+    volume_ratio_tod: float = 0.0
+    # Intraday bias of this base's proxy index (src/dependency.py), stamped by
+    # the scanner after all contexts are built: "LONG" | "SHORT" | "NEUTRAL".
+    index_bias: str = "NEUTRAL"
+
+    def current_volume_ratio(self) -> float:
+        """Newest-5m-bar volume ratio: TOD-normalised when available, else the
+        raw last-bar ÷ 20-bar-average ratio, else 0.0."""
+        if self.volume_ratio_tod > 0:
+            return self.volume_ratio_tod
+        if self.candles_5m and self.volume_avg_5m_20 > 0:
+            return self.candles_5m[-1].volume / self.volume_avg_5m_20
+        return 0.0
