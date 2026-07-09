@@ -6,6 +6,7 @@ from src.structure_state import (
     StructureEvent,
     detect_structure,
     find_swings,
+    last_structure_event,
     last_swing_high,
     last_swing_low,
 )
@@ -46,3 +47,26 @@ def test_choch_down_on_reversal_break() -> None:
 
 def test_no_structure_event_inside_range() -> None:
     assert detect_structure(ZIGZAG, width=1) is None
+
+
+def test_equal_highs_register_one_swing() -> None:
+    # An exact double-top (routine at NSE round numbers) must still register
+    # a swing at its first bar — a fully strict fractal saw nothing here.
+    candles = from_closes([10.0, 14.0, 14.0, 10.0, 11.0])
+    swings = find_swings(candles, width=1)
+    highs = [(s.index, s.price) for s in swings if s.is_high]
+    assert highs == [(1, 14.5)]
+
+
+def test_last_structure_event_persists_after_break_bar() -> None:
+    # BOS_UP printed two bars ago; price has drifted since without breaking
+    # anything else. The persistent read still reports BOS_UP — the one-shot
+    # detect_structure on the newest close alone would return None.
+    candles = from_closes([10.0, 8.0, 12.0, 9.0, 15.0, 11.0, 20.0, 19.0, 18.0])
+    assert last_structure_event(candles, width=1, lookback=8) is StructureEvent.BOS_UP
+
+
+def test_last_structure_event_none_outside_lookback() -> None:
+    quiet_tail = [13.0, 13.2, 13.1, 13.2, 13.1, 13.2, 13.1, 13.2, 13.1, 13.2]
+    candles = from_closes([10.0, 8.0, 12.0, 9.0, 15.0, 11.0, 20.0, *quiet_tail])
+    assert last_structure_event(candles, width=1, lookback=3) is None

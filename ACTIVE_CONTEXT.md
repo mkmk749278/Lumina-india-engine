@@ -1,6 +1,6 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-08 (Session 10 — universe was dark in prod; turned on 46 + floor recalibration)
+**Last updated:** 2026-07-09 (Session 14 — signal-quality overhaul: scoring rebudget, dependency pairs, structure/regime/volume fixes)
 
 ---
 
@@ -327,10 +327,84 @@ not the volume gates.
 
 ---
 
+## Session 14 — Signal-quality overhaul (2026-07-09, owner-directed)
+
+Owner instruction: "improve the signals quality drastically — scoring system,
+gates, market structure, regime, dependency pairs — everything need to fix."
+Branch `claude/indian-stock-signals-quality-bpbrmn`. 341 tests green (29 new),
+ruff + mypy clean. **Scoring-model change — owner-sign-off item, no auto-merge.**
+
+**Dead modules wired in (scaffold violations found):**
+1. **`structure_state.py` (BOS/CHoCH) was never consumed anywhere.** The
+   "structure" score was pure ATR normality. New `last_structure_event()`
+   (persistent: latest break within a 12-bar 15m window, judged per-bar with
+   no lookahead) now drives a 10-pt structure component: aligned BOS 7 /
+   aligned CHoCH 5 / none 3 / opposing break 0, plus ATR normality 0–3.
+2. **`order_blocks.py` (OB/FVG) was never consumed anywhere.** An unmitigated
+   15m order block / FVG backing the signal's direction, containing entry, now
+   counts as one confluence in the level score (zones judged on bars *before*
+   the entry bar so the entry tap doesn't self-mitigate).
+3. **Equal highs broke swing detection** — fully strict fractals never saw a
+   double-top/bottom (routine at NSE round numbers). Now left-strict /
+   right-gte: the plateau registers once at its first bar.
+
+**Dependency pairs (new `src/dependency.py`):**
+4. Static sector groups over the 46-base universe (BANKS, NBFC, IT, METALS,
+   AUTO, PHARMA, FMCG, ENERGY, ADANI, INFRA, CONSUMER, TELECOM, INDEX) +
+   proxy-index chain (banks→BANKNIFTY→NIFTY, NBFC→FINNIFTY→NIFTY, stocks→
+   NIFTY, NIFTY↔BANKNIFTY). Scanner is now two-pass: build all contexts,
+   compute each index's intraday bias (day-change ≥ 0.10% AND price on the
+   matching side of 5m EMA21, else NEUTRAL), stamp `ctx.index_bias`.
+5. New 5-pt scoring component: aligned with proxy bias 5 / neutral 3 /
+   fighting the anchor index 0.
+6. **`correlation_group_gate`** — max 1 same-direction emission per sector
+   group per scan (`INDIA_MAX_PER_GROUP_PER_SCAN`): one index move no longer
+   emits three near-identical bank breakouts; best confidence wins.
+7. **`direction_conflict_gate`** — an opposite-direction signal on the same
+   base within 30 min of an emission is suppressed
+   (`INDIA_CONFLICT_WINDOW_MIN`): no whipsawing subscribers.
+
+**Volume honesty (Session-11 deferred item):**
+8. New `src/market_profile.py`: NSE U-shape time-of-day factors (9 buckets,
+   open 2.2× → lunch 0.6× → close 1.8×) — every volume ratio is now "vs
+   normal for this session phase", so an opening 1.5× is no longer a "surge"
+   and a midday 1.5× finally is. `INDIA_VOL_TOD_ENABLE` to disable.
+9. **Building-bar pro-rating** — the scanner reads the forming 5m bar 30s in;
+   its partial volume was compared against full-bar averages, suppressing
+   every early breakout then re-detecting it stale at bar close. Volume is
+   now scaled by elapsed bucket fraction (floored at 0.3 → max 3.3× scale-up).
+   Evaluators + scorer consume one `ctx.current_volume_ratio()`.
+
+**Regime + gates:**
+10. `classify()` now requires EMA21/EMA55 separation ≥ 0.25×ATR
+    (`REGIME_MIN_EMA_SEP_ATR`) before awarding a trend label — an ordered but
+    flat stack is chop; it was feeding the largest score component and the
+    trend evaluators on noise.
+11. `min_atr_gate` index floor is now max(3 pts, 0.02% of price)
+    (`INDIA_MIN_ATR_PCT_INDEX`) — the absolute floor alone was 0.01% of NIFTY
+    and never fired.
+
+**Scoring rebudget (still 0–100, 9 components):** regime 15 (was 20 — rarer,
+more reliable trend labels shouldn't dominate), HTF 12 (was 15), volume 15
+(TOD-normalised), net-of-cost R:R 15, level confluence 10 (+OB/FVG), OI 10
+(proper 4-quadrant buildup matrix — an OI surge *against* the signal scored
+7/10 before, now 0), VIX/PCR 8 (was 10, wrong-side PCR now penalises both
+directions), structure 10 (was 5), index alignment 5 (new). REGIME_AFFINITY
+rescaled to the 15-pt budget. Emit floor stays 50; A+ stays 80 and now
+requires near-total confluence (max realistic ≈ 89 for a non-breakout setup).
+
+**Watch next sessions:** emission rate under the honest volume ratios + new
+gates; if B-tier flow drops too far the emit floor (50) and per-evaluator
+volume mults are the knobs. Per-sector-group cap (1/scan) is deliberately
+tight — revisit with outcome data if two same-sector signals genuinely differ.
+
+---
+
 ## Session Log
 
 | Session | Date | Key outcomes |
 |---|---|---|
+| 14 | 2026-07-09 | **Signal-quality overhaul** (see section above). BOS/CHoCH + OB/FVG wired into scoring (were dead modules), dependency pairs (sector groups, proxy-index bias, alignment score, correlation-group + direction-conflict gates), TOD volume normalisation + building-bar pro-rating, regime EMA-separation floor, OI 4-quadrant matrix, 9-component score rebudget. 341 tests green. Owner-sign-off item (scoring model). |
 | 1 | 2026-07-01 | Market research complete. Full AI handover spec (27 parts). Architecture locked. CLAUDE.md + ACTIVE_CONTEXT.md. No Telegram. Standalone app. Fyers API v3. |
 | 2 | 2026-07-01 | Bootstrapped repos (PR #1 each). Engine skeleton: config, SessionManager, HolidayManager, ExpiryManager. 22 tests. |
 | 3 | 2026-07-01 | Market substrate, signal model + scoring, all 14 evaluators (PRs #3–#10). 104 tests. PR #9 merged (owner sign-off). Security incident: Fyers secret exposed in chat — regenerated. SL-floor tension identified. |

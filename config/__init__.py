@@ -214,6 +214,11 @@ INSTRUMENTS: dict[str, Instrument] = {
 # --- regime classification ----------------------------------------------
 # ATR as a % of price below which the 60m/daily regime is judged QUIET.
 REGIME_QUIET_ATR_PCT: float = _safe_float("REGIME_QUIET_ATR_PCT", 0.15)
+# Minimum EMA21/EMA55 separation, as a multiple of ATR, before a trend label is
+# awarded. An ordered-but-flat stack is chop: without this floor the regime
+# component (the single largest score input) and the trend evaluators keyed off
+# statistically meaningless EMA ordering.
+REGIME_MIN_EMA_SEP_ATR: float = _safe_float("REGIME_MIN_EMA_SEP_ATR", 0.25)
 
 
 # --- price-relative scaling for the stock universe ------------------------

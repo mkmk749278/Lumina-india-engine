@@ -23,3 +23,10 @@ def test_strong_uptrend() -> None:
 def test_strong_downtrend() -> None:
     prices = [300.0 - i for i in range(80)]
     assert classify(from_closes(prices)) is Regime.TRENDING_DOWN
+
+
+def test_ordered_but_flat_ema_stack_is_ranging() -> None:
+    # A barely-drifting series keeps EMA21 > EMA55 but with separation far
+    # below REGIME_MIN_EMA_SEP_ATR x ATR — that is chop, not a trend.
+    prices = [100.0 + i * 0.002 for i in range(80)]
+    assert classify(from_closes(prices)) is Regime.RANGING

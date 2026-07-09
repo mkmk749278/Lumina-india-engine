@@ -176,8 +176,10 @@ def test_duplicate_direction_gate_allows_below_cap() -> None:
     now = _ist(10, 0)
 
     # One emission is below the default cap of 2 — a second same-direction
-    # setup may still fire (spaced by its own per-setup cooldown).
+    # setup may still fire on a later scan (the correlation-group cap binds
+    # only within one scan; begin_scan simulates the next cycle).
     chain.record_emission(SetupClass.OPENING_RANGE_BREAKOUT, _BASE, Direction.LONG, now)
+    chain.begin_scan()
 
     result = chain.check_emission(
         sig, ctx, now + timedelta(seconds=600), emitted_this_scan=0
@@ -192,10 +194,44 @@ def test_duplicate_direction_gate_passes_different_direction() -> None:
     now = _ist(10, 0)
 
     chain.record_emission(SetupClass.VOLUME_SURGE_BREAKOUT, _BASE, Direction.LONG, now)
+    chain.begin_scan()
 
+    # An opposite-direction signal is fine once the conflict window has passed.
     result = chain.check_emission(
-        sig, ctx, now + timedelta(seconds=600), emitted_this_scan=0
+        sig, ctx, now + timedelta(minutes=45), emitted_this_scan=0
     )
+    assert result is None
+
+
+def test_direction_conflict_gate_blocks_opposite_within_window() -> None:
+    chain = GateChain()
+    now = _ist(10, 0)
+    chain.record_emission(SetupClass.TREND_PULLBACK_EMA, _BASE, Direction.LONG, now)
+
+    sig = make_signal(direction=Direction.SHORT, setup_class=SetupClass.BREAKDOWN_SHORT)
+    ctx = make_context(base=_BASE, atr14_5m=10.0)
+    result = chain.check_emission(
+        sig, ctx, now + timedelta(minutes=10), emitted_this_scan=0
+    )
+    assert result == "direction_conflict_gate"
+
+
+def test_correlation_group_gate_caps_same_direction_sector_per_scan() -> None:
+    chain = GateChain()
+    now = _ist(10, 0)
+    # HDFCBANK LONG already emitted this scan; ICICIBANK LONG is the same
+    # BANKS-group move — suppressed within the scan, allowed next scan.
+    chain.record_emission(
+        SetupClass.VOLUME_SURGE_BREAKOUT, "HDFCBANK", Direction.LONG, now
+    )
+    sig = make_signal(direction=Direction.LONG, base="ICICIBANK")
+    ctx = make_context(base="ICICIBANK", atr14_5m=10.0)
+
+    result = chain.check_emission(sig, ctx, now, emitted_this_scan=1)
+    assert result == "correlation_group_gate"
+
+    chain.begin_scan()
+    result = chain.check_emission(sig, ctx, now + timedelta(seconds=30), emitted_this_scan=0)
     assert result is None
 
 
@@ -435,3 +471,63 @@ def test_scanner_stamps_metadata() -> None:
     assert sig.atr_at_entry > 0
     assert sig.vix_at_entry == 15.0
     assert sig.expiry_date is not None
+
+
+class _CaptureBiasEvaluator(Evaluator):
+    """Records the index_bias each context arrives with; never fires."""
+
+    setup_class = SetupClass.OPENING_RANGE_BREAKOUT
+    enabled = True
+
+    def __init__(self) -> None:
+        self.seen: dict[str, str] = {}
+
+    def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
+        self.seen[ctx.base] = ctx.index_bias
+        return None
+
+
+def test_scanner_anchors_stock_context_to_index_bias() -> None:
+    # NIFTY rallying intraday -> RELIANCE (proxy NIFTY) is stamped LONG bias.
+    tick = IndiaTickStore()
+    oi = IndiaOIStore()
+    mkt = IndiaMarketData()
+    expiry = ExpiryManager()
+
+    stock_sym = "NSE:RELIANCE26JULFUT"
+    nifty_candles = [
+        Candle(
+            ts=_ist(9, 15) + timedelta(minutes=i * 5),
+            open=24000.0 + i * 10,
+            high=24010.0 + i * 10,
+            low=23990.0 + i * 10,
+            close=24005.0 + i * 10,
+            volume=1500.0,
+        )
+        for i in range(30)
+    ]
+    stock_candles = [
+        Candle(
+            ts=_ist(9, 15) + timedelta(minutes=i * 5),
+            open=1500.0,
+            high=1501.0,
+            low=1499.0,
+            close=1500.0,
+            volume=900.0,
+        )
+        for i in range(30)
+    ]
+    tick.seed(_SYM, nifty_candles)
+    tick.seed_intraday_state(_SYM, nifty_candles, _ist(11, 45))
+    tick.seed(stock_sym, stock_candles)
+    mkt.update_vix(15.0)
+
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+    capture = _CaptureBiasEvaluator()
+    scanner = IndiaScanner(builder, SessionManager(), expiry, evaluators=[capture])
+
+    scanner.scan({_BASE: _SYM, "RELIANCE": stock_sym}, _ist(11, 45))
+
+    assert capture.seen["RELIANCE"] == Direction.LONG
+    # NIFTY itself anchors to BANKNIFTY, which has no context here -> NEUTRAL.
+    assert capture.seen[_BASE] == "NEUTRAL"
