@@ -98,6 +98,8 @@ _MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "india_session_summary": [
         ("total_pct", "REAL NOT NULL DEFAULT 0"),
         ("avg_pct", "REAL NOT NULL DEFAULT 0"),
+        # A tier added Session 15 (IB14 — A+/A/B were the contract all along).
+        ("a_count", "INTEGER NOT NULL DEFAULT 0"),
     ],
 }
 
@@ -327,6 +329,7 @@ async def write_session_summary() -> dict:
         """
         SELECT COUNT(*),
                COALESCE(SUM(CASE WHEN tier = 'A+' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN tier = 'A' THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN tier = 'B' THEN 1 ELSE 0 END), 0),
                COALESCE(AVG(confidence), 0)
         FROM india_signals WHERE DATE(created_at) = DATE('now', 'localtime')
@@ -334,11 +337,12 @@ async def write_session_summary() -> dict:
     )
     sig_row = await cursor.fetchone()
     assert sig_row is not None  # aggregate query always yields one row
-    signal_count, a_plus, b_count, avg_conf = (
+    signal_count, a_plus, a_count, b_count, avg_conf = (
         int(sig_row[0]),
         int(sig_row[1]),
         int(sig_row[2]),
-        float(sig_row[3]),
+        int(sig_row[3]),
+        float(sig_row[4]),
     )
 
     cursor = await db.execute(
@@ -370,6 +374,7 @@ async def write_session_summary() -> dict:
         "date": None,  # filled by SQL below
         "signal_count": signal_count,
         "a_plus_count": a_plus,
+        "a_count": a_count,
         "b_count": b_count,
         "avg_confidence": round(avg_conf, 1),
         "total_suppressed": sum(gates.values()),
@@ -387,13 +392,14 @@ async def write_session_summary() -> dict:
     await db.execute(
         """
         INSERT INTO india_session_summary
-            (date, signal_count, a_plus_count, b_count, avg_confidence,
+            (date, signal_count, a_plus_count, a_count, b_count, avg_confidence,
              total_suppressed, gates_fired, tp1_count, sl_count,
              expired_count, total_points, total_pct, avg_pct)
-        VALUES (DATE('now', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (DATE('now', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(date) DO UPDATE SET
             signal_count = excluded.signal_count,
             a_plus_count = excluded.a_plus_count,
+            a_count = excluded.a_count,
             b_count = excluded.b_count,
             avg_confidence = excluded.avg_confidence,
             total_suppressed = excluded.total_suppressed,
@@ -408,6 +414,7 @@ async def write_session_summary() -> dict:
         (
             summary["signal_count"],
             summary["a_plus_count"],
+            summary["a_count"],
             summary["b_count"],
             summary["avg_confidence"],
             summary["total_suppressed"],
@@ -429,6 +436,64 @@ async def get_session_summaries(limit: int = 30) -> list[dict]:
     cursor = await db.execute(
         "SELECT * FROM india_session_summary ORDER BY date DESC LIMIT ?",
         (limit,),
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def clear_history(scope: str = "all") -> dict[str, int]:
+    """Owner maintenance: wipe signal history (ops Control panel).
+
+    ``scope`` is ``"all"`` (every signal, outcome, suppression and session
+    summary — a clean restart of the quality window) or ``"today"`` (just the
+    current session's rows). Returns rows deleted per table. The caller is
+    responsible for resetting the in-memory engine state (gate chain, trade
+    monitor) so the live process matches the emptied tables.
+    """
+    if scope not in ("all", "today"):
+        raise ValueError(f"clear_history: unknown scope {scope!r}")
+    db = await get_db()
+    deleted: dict[str, int] = {}
+    tables = (
+        "india_signals",
+        "india_signal_outcomes",
+        "india_suppressions",
+        "india_session_summary",
+    )
+    for table in tables:
+        where = (
+            ""
+            if scope == "all"
+            else (
+                " WHERE date = DATE('now', 'localtime')"
+                if table == "india_session_summary"
+                else " WHERE DATE(created_at) = DATE('now', 'localtime')"
+            )
+        )
+        cursor = await db.execute(f"DELETE FROM {table}{where}")
+        deleted[table] = cursor.rowcount if cursor.rowcount is not None else 0
+    await db.commit()
+    return deleted
+
+
+async def get_signals_today_for_gates() -> list[dict]:
+    """Today's emissions, for gate-chain rehydration after a restart.
+
+    ``age_sec`` (seconds since emission) is computed by SQLite in its own
+    clock frame, so a container-timezone mismatch between the DB's
+    ``localtime`` strings and the engine's IST clock cannot skew cooldown
+    windows.
+    """
+    db = await get_db()
+    cursor = await db.execute(
+        """
+        SELECT setup_class, base, direction,
+               (strftime('%s', 'now', 'localtime') - strftime('%s', created_at))
+                   AS age_sec
+        FROM india_signals
+        WHERE DATE(created_at) = DATE('now', 'localtime')
+        ORDER BY created_at
+        """
     )
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]

@@ -334,6 +334,26 @@ def round_step_for(base: str, price: float) -> float:
         return 50.0
     return 100.0
 
+# --- session warm-up (Session 15) -----------------------------------------
+# No signal emission before this IST time. The first minutes after open are
+# the worst tape of the day (auction noise, spreads, half-formed ranges) and
+# the live data proved it: the 2026-07-09 open burst emitted 10 signals inside
+# 09:15-09:16 — exhausting the whole daily budget — and every one hit SL.
+WARMUP_END: time = _safe_time("INDIA_WARMUP_END", time(9, 30))
+
+# A breakout candidate whose current price has already run more than this many
+# ATRs beyond its stated entry level is a chase — the subscriber cannot get the
+# printed entry, and the measured outcome would be fiction (reality-first).
+MAX_CHASE_ATR: float = _safe_float("INDIA_MAX_CHASE_ATR", 0.5)
+
+# Stop distance below this many ATRs is inside one bar's noise — the trade is
+# structurally a coin flip on the next wick regardless of the setup's logic.
+# Live data 2026-07-08/09: the dense SL_HIT cluster sat at 0.08-0.20% stops
+# (fractions of one 5m bar). Gate, not geometry: evaluators keep their own
+# SL/TP shapes; candidates whose shape degenerates are suppressed with
+# telemetry instead of silently emitted.
+MIN_SL_ATR_MULT: float = _safe_float("INDIA_MIN_SL_ATR_MULT", 0.45)
+
 # --- confidence tiers ----------------------------------------------------
 # Emit floor and A+ cutoff on the 0-100 confidence score (spec §11/§13.1).
 # Below the floor a candidate is FILTERED (no FCM, no DB write).
@@ -350,6 +370,10 @@ def round_step_for(base: str, price: float) -> float:
 # outcome data shows the B-tier win rate. A+ cutoff (80) is unchanged: A+ scarce.
 CONFIDENCE_EMIT_FLOOR: float = _safe_float("INDIA_CONFIDENCE_EMIT_FLOOR", 50.0)
 CONFIDENCE_A_PLUS: float = _safe_float("INDIA_CONFIDENCE_A_PLUS", 80.0)
+# The A tier (IB14: the ₹999 plan carries A and B signals; the app colour-codes
+# A+/A/B). tier_for() emitted only A+/B before Session 15 — the A band the
+# business rules and the app contract both reference simply did not exist.
+CONFIDENCE_A: float = _safe_float("INDIA_CONFIDENCE_A", 65.0)
 
 # SL-floor recalibration (LOOSEN PASS, Session 8b) -----------------------
 # Every evaluator's MIN_SL_PCT was 0.15-0.30%, i.e. a 42-84 pt NIFTY stop at
@@ -364,9 +388,16 @@ CONFIDENCE_A_PLUS: float = _safe_float("INDIA_CONFIDENCE_A_PLUS", 80.0)
 
 # --- evaluator geometry: LIQUIDITY_SWEEP_REVERSAL (spec §10.1) -----------
 # Each evaluator owns its SL/TP geometry (CLAUDE.md). These are LSR's.
+# SL ATR pads recalibrated 0.3 -> 0.5 (Session 15): a 0.3-ATR pad put the stop
+# inside a single bar's expected range — live outcomes showed the SL_HIT cluster
+# concentrated exactly in those sub-bar stops. 0.5 ATR beyond the structural
+# level is still a tight scalp stop but survives ordinary bar noise. Applies to
+# the evaluators whose stop hugs a level/bar (LSR/VSB/TPE/SRF/DIV/MAC); the
+# structurally-wide stops (VIX capitulation, PCR/OIS level pads at 0.5, EGS at
+# 1.0) are unchanged.
 LSR_SWING_LOOKBACK: int = _safe_int("LSR_SWING_LOOKBACK", 30)
 LSR_VOLUME_MULT: float = _safe_float("LSR_VOLUME_MULT", 1.2)
-LSR_SL_ATR_MULT: float = _safe_float("LSR_SL_ATR_MULT", 0.3)
+LSR_SL_ATR_MULT: float = _safe_float("LSR_SL_ATR_MULT", 0.5)
 LSR_MIN_SL_PCT: float = _safe_float("LSR_MIN_SL_PCT", 0.06)
 LSR_MAX_SL_PCT: float = _safe_float("LSR_MAX_SL_PCT", 1.0)
 LSR_MIN_RR: float = _safe_float("LSR_MIN_RR", 1.5)
@@ -390,7 +421,7 @@ VSB_SWING_LOOKBACK: int = _safe_int("VSB_SWING_LOOKBACK", 20)
 VSB_VOLUME_MULT: float = _safe_float("VSB_VOLUME_MULT", 1.5)
 VSB_OI_MIN_PCT: float = _safe_float("VSB_OI_MIN_PCT", 0.0)
 VSB_ENTRY_ATR_MULT: float = _safe_float("VSB_ENTRY_ATR_MULT", 0.05)
-VSB_SL_ATR_MULT: float = _safe_float("VSB_SL_ATR_MULT", 0.3)
+VSB_SL_ATR_MULT: float = _safe_float("VSB_SL_ATR_MULT", 0.5)
 VSB_MIN_SL_PCT: float = _safe_float("VSB_MIN_SL_PCT", 0.06)
 VSB_MAX_SL_PCT: float = _safe_float("VSB_MAX_SL_PCT", 1.0)
 VSB_TP_RR: float = _safe_float("VSB_TP_RR", 2.0)
@@ -416,7 +447,7 @@ PCR_MIN_RR: float = _safe_float("PCR_MIN_RR", 1.5)
 TPE_PULLBACK_ATR_MULT: float = _safe_float("TPE_PULLBACK_ATR_MULT", 1.5)
 TPE_RSI_MIN: float = _safe_float("TPE_RSI_MIN", 35.0)
 TPE_RSI_MAX: float = _safe_float("TPE_RSI_MAX", 60.0)
-TPE_SL_ATR_MULT: float = _safe_float("TPE_SL_ATR_MULT", 0.3)
+TPE_SL_ATR_MULT: float = _safe_float("TPE_SL_ATR_MULT", 0.5)
 TPE_MIN_SL_POINTS: float = _safe_float("TPE_MIN_SL_POINTS", 8.0)
 TPE_MIN_SL_PCT: float = _safe_float("TPE_MIN_SL_PCT", 0.06)
 TPE_MAX_SL_PCT: float = _safe_float("TPE_MAX_SL_PCT", 0.80)
@@ -437,7 +468,7 @@ SRF_LONG_ENABLED: bool = _safe_bool("SR_FLIP_LONG_ENABLED", False)
 SRF_SHORT_ENABLED: bool = _safe_bool("SR_FLIP_SHORT_ENABLED", True)
 SRF_FLIP_ATR_MULT: float = _safe_float("SRF_FLIP_ATR_MULT", 0.5)
 SRF_RETEST_ATR_MULT: float = _safe_float("SRF_RETEST_ATR_MULT", 0.3)
-SRF_SL_ATR_MULT: float = _safe_float("SRF_SL_ATR_MULT", 0.3)
+SRF_SL_ATR_MULT: float = _safe_float("SRF_SL_ATR_MULT", 0.5)
 SRF_MIN_SL_PCT: float = _safe_float("SRF_MIN_SL_PCT", 0.06)
 SRF_MAX_SL_PCT: float = _safe_float("SRF_MAX_SL_PCT", 1.50)
 SRF_MIN_RR: float = _safe_float("SRF_MIN_RR", 1.5)
@@ -450,8 +481,19 @@ FAR_MAX_SL_PCT: float = _safe_float("FAR_MAX_SL_PCT", 1.0)
 FAR_MIN_RR: float = _safe_float("FAR_MIN_RR", 1.5)
 
 # --- evaluator geometry: DIVERGENCE_CONTINUATION (spec §10.10) ----------
+# Tightened (Session 15): DIV was 48% of all live emissions at a 15.6% win rate.
+# Any new price extreme with marginally weaker RSI qualified — a condition that
+# stays true bar after bar in a steady drift and fired on 15+ correlated bases
+# at once. A real exhaustion divergence needs (a) the first extreme printed at
+# a genuinely stretched RSI, (b) a material RSI fade, (c) an actual rejection
+# candle at the new extreme — not just a red/green close.
 DIV_LOOKBACK: int = _safe_int("DIV_LOOKBACK", 10)
-DIV_SL_ATR_MULT: float = _safe_float("DIV_SL_ATR_MULT", 0.3)
+# RSI at the *prior* extreme: >= this for a bearish setup (first peak was
+# overbought), <= (100 - this) mirrored for bullish.
+DIV_RSI_EXTREME: float = _safe_float("DIV_RSI_EXTREME", 60.0)
+# Minimum RSI fade between the prior extreme and now.
+DIV_MIN_RSI_MARGIN: float = _safe_float("DIV_MIN_RSI_MARGIN", 5.0)
+DIV_SL_ATR_MULT: float = _safe_float("DIV_SL_ATR_MULT", 0.5)
 DIV_MIN_SL_PCT: float = _safe_float("DIV_MIN_SL_PCT", 0.06)
 DIV_MAX_SL_PCT: float = _safe_float("DIV_MAX_SL_PCT", 1.20)
 DIV_MIN_RR: float = _safe_float("DIV_MIN_RR", 1.5)
@@ -467,7 +509,7 @@ QCB_MIN_RR: float = _safe_float("QCB_MIN_RR", 2.0)
 
 # --- evaluator geometry: MA_CROSS_TREND_SHIFT (spec §10.12) ------------
 MAC_VOLUME_MULT: float = _safe_float("MAC_VOLUME_MULT", 1.2)
-MAC_SL_ATR_MULT: float = _safe_float("MAC_SL_ATR_MULT", 0.3)
+MAC_SL_ATR_MULT: float = _safe_float("MAC_SL_ATR_MULT", 0.5)
 MAC_MIN_SL_PCT: float = _safe_float("MAC_MIN_SL_PCT", 0.06)
 MAC_MAX_SL_PCT: float = _safe_float("MAC_MAX_SL_PCT", 1.0)
 MAC_MIN_RR: float = _safe_float("MAC_MIN_RR", 1.5)

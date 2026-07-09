@@ -48,6 +48,11 @@ class _FcmTokenBody(BaseModel):
     token: str
     uid: str = ""
 
+
+class _ClearHistoryBody(BaseModel):
+    scope: str = "all"  # "all" | "today"
+    confirm: str = ""  # must be exactly "CLEAR" — belt for a destructive call
+
 _STATIC_TOKEN = os.environ.get("API_STATIC_TOKEN", "")
 _firebase_auth_module: Any = None
 _firebase_auth_ready = False
@@ -59,6 +64,10 @@ _session_state_ref: list[str] | None = None
 _status_provider: Callable[[], dict] | None = None
 _price_provider: Callable[[], dict[str, float]] | None = None
 _token_refresh_cb: Callable[[str], Awaitable[None]] | None = None
+# Owner-maintenance hook: resets in-memory engine state (gate chain, trade
+# monitor) after a history wipe so the live process matches the emptied
+# tables. Returns a small diagnostic dict for the response.
+_admin_state_reset_cb: Callable[[], dict] | None = None
 
 
 def _with_live(row: dict, prices: dict[str, float]) -> dict:
@@ -91,6 +100,13 @@ def set_token_refresh_callback(cb: Callable[[str], Awaitable[None]]) -> None:
     """Engine registers its feed hot-swap here (called on new daily token)."""
     global _token_refresh_cb
     _token_refresh_cb = cb
+
+
+def set_admin_state_reset(cb: Callable[[], dict]) -> None:
+    """Engine registers its in-memory state reset (gate chain + trade
+    monitor) here; the admin clear-history / reset-gates endpoints call it."""
+    global _admin_state_reset_cb
+    _admin_state_reset_cb = cb
 
 
 async def _exchange_auth_code(auth_code: str) -> str:
@@ -203,6 +219,18 @@ def _verify_firebase_id_token(token: str) -> str | None:
         return str(uid) if uid is not None else None
     except Exception:
         return None
+
+
+def _check_admin_token(request: Request) -> None:
+    """Admin endpoints accept ONLY the static ops token.
+
+    A subscriber's Firebase ID token authenticates the normal read API but
+    must never authorise destructive maintenance actions.
+    """
+    auth = request.headers.get("Authorization", "")
+    token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+    if not _STATIC_TOKEN or token != _STATIC_TOKEN:
+        raise HTTPException(status_code=403, detail="Admin token required")
 
 
 def _check_token(request: Request) -> None:
@@ -336,6 +364,43 @@ def build_app() -> FastAPI:
         uid = getattr(request.state, "firebase_uid", None) or body.uid
         await fcm_dispatcher.register_token(body.token, uid)
         return {"status": "ok"}
+
+    @app.post("/api/admin/clear-history", dependencies=[Depends(_check_admin_token)])
+    async def admin_clear_history(body: _ClearHistoryBody) -> dict:
+        """Owner maintenance (ops Control panel): wipe signal history.
+
+        Deletes signals, outcomes, suppressions and session summaries for the
+        requested scope, then resets the in-memory engine state (gate chain,
+        trade monitor) so the live process matches the emptied tables.
+        Requires ``confirm: "CLEAR"`` — this is irreversible.
+        """
+        if body.confirm != "CLEAR":
+            raise HTTPException(
+                status_code=400, detail='confirm must be exactly "CLEAR"'
+            )
+        if body.scope not in ("all", "today"):
+            raise HTTPException(status_code=400, detail="scope must be all|today")
+        deleted = await signal_store.clear_history(body.scope)
+        state: dict = {}
+        if _admin_state_reset_cb is not None:
+            state = _admin_state_reset_cb()
+        logger.warning(
+            "ADMIN clear-history scope={} deleted={} state={}",
+            body.scope,
+            deleted,
+            state,
+        )
+        return {"status": "ok", "scope": body.scope, "deleted": deleted, **state}
+
+    @app.post("/api/admin/reset-gates", dependencies=[Depends(_check_admin_token)])
+    async def admin_reset_gates() -> dict:
+        """Owner maintenance: reset today's in-memory gate state (caps,
+        cooldowns, conflict windows) without touching stored history."""
+        state: dict = {}
+        if _admin_state_reset_cb is not None:
+            state = _admin_state_reset_cb()
+        logger.warning("ADMIN reset-gates state={}", state)
+        return {"status": "ok", **state}
 
     @app.get("/fyers/callback", response_class=HTMLResponse)
     async def fyers_callback(request: Request) -> HTMLResponse:

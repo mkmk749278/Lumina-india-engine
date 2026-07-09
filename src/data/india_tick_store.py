@@ -303,6 +303,10 @@ class IndiaTickStore:
             self._or_low.get(symbol),
         )
 
+    def is_opening_range_locked(self, symbol: str) -> bool:
+        """True once the 09:15-09:45 opening range is final for *symbol*."""
+        return symbol in self._or_locked
+
     def get_day_open(self, symbol: str) -> float:
         return self._day_open.get(symbol, 0.0)
 

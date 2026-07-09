@@ -161,6 +161,17 @@ class IndiaTradeMonitor:
             resolved.append(self._close(tracked, outcome, exit_price, now))
         return resolved
 
+    def clear(self) -> int:
+        """Owner maintenance (ops Control panel): drop all tracked signals
+        without recording outcomes — used when the signal history itself is
+        being wiped, so the monitor doesn't resolve ghosts into an empty
+        table. Returns how many were dropped."""
+        dropped = len(self._open)
+        self._open.clear()
+        if dropped:
+            logger.info("trade monitor cleared — {} tracked signals dropped", dropped)
+        return dropped
+
     def force_close_all(self, now: datetime) -> list[SignalOutcome]:
         """Session over — score everything still open at its last close."""
         resolved: list[SignalOutcome] = []

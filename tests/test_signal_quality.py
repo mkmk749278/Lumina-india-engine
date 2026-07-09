@@ -13,10 +13,11 @@ ENGINE = IndiaSignalScoringEngine()
 
 
 def test_tier_boundaries() -> None:
+    # Three tiers per IB14: A+ >= 80, A >= 65, B >= emit floor (50).
     assert tier_for(config.CONFIDENCE_A_PLUS) == Tier.A_PLUS
-    assert tier_for(config.CONFIDENCE_A_PLUS - 0.1) == Tier.B
-    # B spans [emit floor, A+); floor recalibrated 55 -> 50 (Session 10) for
-    # post-#44 honest scores. Assert against config so the tune is single-source.
+    assert tier_for(config.CONFIDENCE_A_PLUS - 0.1) == Tier.A
+    assert tier_for(config.CONFIDENCE_A) == Tier.A
+    assert tier_for(config.CONFIDENCE_A - 0.1) == Tier.B
     assert tier_for(config.CONFIDENCE_EMIT_FLOOR) == Tier.B
     assert tier_for(config.CONFIDENCE_EMIT_FLOOR - 0.1) == Tier.FILTERED
 

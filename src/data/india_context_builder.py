@@ -104,6 +104,7 @@ class IndiaContextBuilder:
             pcr_is_extreme_bullish=self._oi.is_pcr_extreme_bullish(),
             opening_range_high=or_high,
             opening_range_low=or_low,
+            opening_range_locked=self._tick.is_opening_range_locked(symbol),
             day_open=self._tick.get_day_open(symbol),
             intraday_high=self._tick.get_intraday_high(symbol),
             intraday_low=self._tick.get_intraday_low(symbol),

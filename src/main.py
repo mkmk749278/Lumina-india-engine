@@ -23,6 +23,7 @@ import config
 from src.api.server import (
     build_app,
     serve_api,
+    set_admin_state_reset,
     set_engine_refs,
     set_token_refresh_callback,
 )
@@ -39,6 +40,7 @@ from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
 from src.signal_router import IndiaSignalRouter
 from src.signal_store import (
+    get_signals_today_for_gates,
     get_unresolved_signals_today,
     init_tables,
     insert_outcome,
@@ -70,9 +72,12 @@ async def _run() -> None:
     scanner = IndiaScanner(ctx_builder, session, expiry)
     router = IndiaSignalRouter()
     monitor = IndiaTradeMonitor(tick)
-    monitor.resume(
-        await get_unresolved_signals_today(), datetime.now(config.IST)
-    )
+    boot_now = datetime.now(config.IST)
+    monitor.resume(await get_unresolved_signals_today(), boot_now)
+    # Restore today's emission state so a mid-session restart (deploys
+    # included) cannot re-open the daily budget or wipe cooldowns — the
+    # 2026-07-09 restart bursts quadrupled the daily cap.
+    scanner.rehydrate(await get_signals_today_for_gates(), boot_now)
 
     feed_kind = os.environ.get("DATA_FEED", "fyers").strip().lower()
     feed_active = [False]
@@ -200,8 +205,19 @@ async def _run() -> None:
     prev_state: SessionState | None = None
     # How many of the gate chain's (day-cumulative) suppressions have
     # already been persisted — only the tail beyond this goes to SQLite,
-    # otherwise every scan would re-insert the same rows.
-    persisted_suppressions = 0
+    # otherwise every scan would re-insert the same rows. One-element list
+    # so the admin state-reset callback (below) can zero it too.
+    persisted_ref = [0]
+
+    def _admin_state_reset() -> dict:
+        """Ops Control panel hook: align in-memory state with a wiped DB —
+        drop tracked signals and reset the gate chain's day state."""
+        dropped = monitor.clear()
+        scanner.reset_day()
+        persisted_ref[0] = 0
+        return {"tracked_signals_dropped": dropped, "gates_reset": True}
+
+    set_admin_state_reset(_admin_state_reset)
 
     try:
         while not shutdown.is_set():
@@ -211,12 +227,16 @@ async def _run() -> None:
 
             if state != prev_state:
                 logger.info("session state -> {}", state.value)
+                # Reset only on the genuine daily-open transition. A boot
+                # straight into OPEN (mid-session restart) must NOT reset —
+                # the gate chain was just rehydrated from today's persisted
+                # emissions, and wiping it re-opens the daily budget.
                 if (
                     state == SessionState.OPEN
-                    and prev_state in (SessionState.PRE_OPEN, None)
+                    and prev_state == SessionState.PRE_OPEN
                 ):
                     scanner.reset_day()
-                    persisted_suppressions = 0
+                    persisted_ref[0] = 0
                     # On a genuine daily open (not the first boot — start()
                     # already seeded then), re-derive prev-day levels and
                     # re-seed the higher-timeframe buffers so a long-running
@@ -265,10 +285,10 @@ async def _run() -> None:
                 scan_count_ref[0] += 1
 
                 all_suppressions = scanner.gates.suppressions
-                new_suppressions = all_suppressions[persisted_suppressions:]
+                new_suppressions = all_suppressions[persisted_ref[0]:]
                 if signals or new_suppressions:
                     await router.route(signals, new_suppressions)
-                    persisted_suppressions = len(all_suppressions)
+                    persisted_ref[0] = len(all_suppressions)
 
                 monitor.register(signals, now)
 

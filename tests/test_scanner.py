@@ -245,19 +245,39 @@ def test_scan_cap_gate_suppresses_overflow_within_one_scan() -> None:
     assert result == "scan_cap_gate"
 
 
-def test_daily_cap_gate_suppresses_after_budget_spent() -> None:
+def test_daily_cap_gate_suppresses_when_cap_configured(monkeypatch) -> None:
+    # The daily cap is OFF by default (0 = unlimited, owner decision) —
+    # enable a small one to cover the gate itself.
+    import src.scanner as scanner_mod
+
+    monkeypatch.setattr(scanner_mod, "_MAX_PER_DAY", 5)
     chain = GateChain()
     sig = make_signal(direction=Direction.LONG)
     now = _ist(10, 0)
-    # Spend the whole daily budget across many bases so the per-direction
-    # cap never triggers first.
-    for i in range(_MAX_PER_DAY):
+    # Spend the whole configured budget across many bases so the
+    # per-direction cap never triggers first.
+    for i in range(5):
         chain.record_emission(
             SetupClass.VOLUME_SURGE_BREAKOUT, f"STOCK{i}", Direction.LONG, now
         )
     ctx = make_context(base=_BASE, atr14_5m=10.0)
     result = chain.check_emission(sig, ctx, now, emitted_this_scan=0)
     assert result == "daily_cap_gate"
+
+
+def test_daily_cap_disabled_by_default_is_unlimited() -> None:
+    assert _MAX_PER_DAY == 0  # no fixed daily signal budget (owner decision)
+    chain = GateChain()
+    now = _ist(10, 0)
+    for i in range(50):
+        chain.record_emission(
+            SetupClass.VOLUME_SURGE_BREAKOUT, f"STOCK{i}", Direction.LONG, now
+        )
+    chain.begin_scan()
+    sig = make_signal(direction=Direction.LONG)
+    ctx = make_context(base=_BASE, atr14_5m=10.0)
+    result = chain.check_emission(sig, ctx, now, emitted_this_scan=0)
+    assert result != "daily_cap_gate"
 
 
 def test_confidence_floor_gate_suppresses_low_score() -> None:

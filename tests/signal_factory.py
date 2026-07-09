@@ -73,7 +73,12 @@ def make_context(
     is_expiry_day: bool = False,
     max_pain_strike: float | None = None,
     volume_avg_15m_20: float = 0.0,
+    opening_range_locked: bool | None = None,
 ) -> IndiaContext:
+    # A test that supplies an opening range means it as a final level unless
+    # it says otherwise (the pre-09:45 forming-range case sets this False).
+    if opening_range_locked is None:
+        opening_range_locked = opening_range_high is not None
     if candles_5m is None:
         candles_5m = [
             c(high=p + 0.5, low=p - 0.5, close=float(p)) for p in (23998, 23999, 24000)
@@ -94,6 +99,7 @@ def make_context(
         pcr_is_extreme_bullish=pcr_is_extreme_bullish,
         opening_range_high=opening_range_high,
         opening_range_low=opening_range_low,
+        opening_range_locked=opening_range_locked,
         symbol=symbol,
         tick_size=tick_size,
         candles_15m=candles_15m if candles_15m is not None else [],
