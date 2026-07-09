@@ -35,8 +35,10 @@ Emission stage (highest confidence first across the whole scan):
      setups at once; subscribers get the best one, not three copies
  16. setup_flood_gate — same-direction cap per setup class per scan:
      one market-wide move fires the same evaluator across many groups
- 17. scan_cap_gate / daily_cap_gate — universe-wide emission budget
-     (46 bases × 2 directions would otherwise allow ~184 signals/day)
+ 17. scan_cap_gate — per-scan flood limiter (best few per scan)
+ 18. daily_cap_gate — optional hard daily ceiling; OFF by default
+     (INDIA_MAX_SIGNALS_PER_DAY=0 — owner decision: no fixed daily
+     signal budget, volume is bounded by quality gates, not a count)
 
 Restart safety: the chain's day-cumulative state (daily caps, cooldowns,
 per-base last emission) is rehydrated from ``india_signals`` at boot —
@@ -102,11 +104,17 @@ _MIN_OI: float = config._safe_float("INDIA_MIN_OI", 100_000.0)
 # bases — below the 3+/day target once any single setup misfired; 2 gives
 # room for a genuine second same-direction setup without spamming.
 _MAX_PER_DIRECTION: int = config._safe_int("INDIA_MAX_SIGNALS_PER_DIRECTION", 2)
-# Universe-wide emission budget. With 46 bases a correlated index move can
-# validate a dozen near-identical stock breakouts in one scan — subscribers
-# get the best few, not a flood. Both env-overridable.
+# Per-scan flood limiter. With 46 bases a correlated index move can validate a
+# dozen near-identical stock breakouts in one scan — subscribers get the best
+# few per scan, not a burst. Env-overridable.
 _MAX_PER_SCAN: int = config._safe_int("INDIA_MAX_SIGNALS_PER_SCAN", 3)
-_MAX_PER_DAY: int = config._safe_int("INDIA_MAX_SIGNALS_PER_DAY", 10)
+# Daily total cap. 0 (default) = unlimited — owner decision (Session 15):
+# there is no fixed daily signal budget; volume is bounded by quality gates
+# (confidence floor, cooldowns, per-direction/base, per-setup and per-group
+# flood caps), not by an arbitrary count. The old default of 10 was being
+# fully spent in the opening burst, silencing the rest of the day. Set a
+# positive value to restore a hard daily ceiling.
+_MAX_PER_DAY: int = config._safe_int("INDIA_MAX_SIGNALS_PER_DAY", 0)
 # ATR floor for index bases as % of price — the 3.0 absolute-point floor is
 # 0.01% of NIFTY and effectively never fired; the % floor keeps a genuinely
 # dead session (no tradeable range) from emitting geometry built on noise.
@@ -344,7 +352,7 @@ class GateChain:
                 ctx,
                 now,
             )
-        if self._emitted_total_today >= _MAX_PER_DAY:
+        if _MAX_PER_DAY > 0 and self._emitted_total_today >= _MAX_PER_DAY:
             return self._suppress(
                 "daily_cap_gate",
                 f"{self._emitted_total_today} signals already emitted today"

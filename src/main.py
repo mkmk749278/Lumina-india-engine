@@ -23,6 +23,7 @@ import config
 from src.api.server import (
     build_app,
     serve_api,
+    set_admin_state_reset,
     set_engine_refs,
     set_token_refresh_callback,
 )
@@ -204,8 +205,19 @@ async def _run() -> None:
     prev_state: SessionState | None = None
     # How many of the gate chain's (day-cumulative) suppressions have
     # already been persisted — only the tail beyond this goes to SQLite,
-    # otherwise every scan would re-insert the same rows.
-    persisted_suppressions = 0
+    # otherwise every scan would re-insert the same rows. One-element list
+    # so the admin state-reset callback (below) can zero it too.
+    persisted_ref = [0]
+
+    def _admin_state_reset() -> dict:
+        """Ops Control panel hook: align in-memory state with a wiped DB —
+        drop tracked signals and reset the gate chain's day state."""
+        dropped = monitor.clear()
+        scanner.reset_day()
+        persisted_ref[0] = 0
+        return {"tracked_signals_dropped": dropped, "gates_reset": True}
+
+    set_admin_state_reset(_admin_state_reset)
 
     try:
         while not shutdown.is_set():
@@ -224,7 +236,7 @@ async def _run() -> None:
                     and prev_state == SessionState.PRE_OPEN
                 ):
                     scanner.reset_day()
-                    persisted_suppressions = 0
+                    persisted_ref[0] = 0
                     # On a genuine daily open (not the first boot — start()
                     # already seeded then), re-derive prev-day levels and
                     # re-seed the higher-timeframe buffers so a long-running
@@ -273,10 +285,10 @@ async def _run() -> None:
                 scan_count_ref[0] += 1
 
                 all_suppressions = scanner.gates.suppressions
-                new_suppressions = all_suppressions[persisted_suppressions:]
+                new_suppressions = all_suppressions[persisted_ref[0]:]
                 if signals or new_suppressions:
                     await router.route(signals, new_suppressions)
-                    persisted_suppressions = len(all_suppressions)
+                    persisted_ref[0] = len(all_suppressions)
 
                 monitor.register(signals, now)
 

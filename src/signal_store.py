@@ -441,6 +441,41 @@ async def get_session_summaries(limit: int = 30) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def clear_history(scope: str = "all") -> dict[str, int]:
+    """Owner maintenance: wipe signal history (ops Control panel).
+
+    ``scope`` is ``"all"`` (every signal, outcome, suppression and session
+    summary — a clean restart of the quality window) or ``"today"`` (just the
+    current session's rows). Returns rows deleted per table. The caller is
+    responsible for resetting the in-memory engine state (gate chain, trade
+    monitor) so the live process matches the emptied tables.
+    """
+    if scope not in ("all", "today"):
+        raise ValueError(f"clear_history: unknown scope {scope!r}")
+    db = await get_db()
+    deleted: dict[str, int] = {}
+    tables = (
+        "india_signals",
+        "india_signal_outcomes",
+        "india_suppressions",
+        "india_session_summary",
+    )
+    for table in tables:
+        where = (
+            ""
+            if scope == "all"
+            else (
+                " WHERE date = DATE('now', 'localtime')"
+                if table == "india_session_summary"
+                else " WHERE DATE(created_at) = DATE('now', 'localtime')"
+            )
+        )
+        cursor = await db.execute(f"DELETE FROM {table}{where}")
+        deleted[table] = cursor.rowcount if cursor.rowcount is not None else 0
+    await db.commit()
+    return deleted
+
+
 async def get_signals_today_for_gates() -> list[dict]:
     """Today's emissions, for gate-chain rehydration after a restart.
 

@@ -387,11 +387,27 @@ the system breaks even near 35% win rate — the fixes target the failure modes
 that produced 27.8%, they do not change the cost reality. 3–6 signals/day of
 that quality is the honest goal, not 40.
 
+**Owner follow-up (same session, approved):**
+- **No fixed daily signal budget.** `INDIA_MAX_SIGNALS_PER_DAY` default 10 → 0
+  (= unlimited; set a positive value to restore a ceiling). The old cap was
+  the reason signals only appeared at open/restart: it was fully spent in the
+  opening burst and everything after was `daily_cap_gate`. Volume is now
+  bounded by quality gates only (confidence floor, cooldowns, per-direction/
+  base, per-setup + per-group flood caps, per-scan cap of 3).
+- **Ops Control panel** (new view, `/control`): clear signal history
+  (all/today — wipes signals, outcomes, suppressions, session summaries AND
+  resets the live engine's gate chain + trade monitor) and reset today's
+  gates. Backed by new engine admin endpoints `POST /api/admin/clear-history`
+  (requires `confirm: "CLEAR"`) and `POST /api/admin/reset-gates` — both
+  accept ONLY the static ops token (a subscriber Firebase token can never
+  authorise maintenance). Engine registers `set_admin_state_reset` from main.
+
 **Watch next sessions:** emission rate under warm-up + flood caps + DIV
-tightening (expect a sharp drop — that is intended); whether index-conflict
-suppressions line up with saved losses (check `/api/suppressed` vs what the
-market did); QCB starvation via sl_noise_gate telemetry; A-tier population
-(65–79 band) and whether A outperforms B as designed.
+tightening with the daily cap now removed — the honest volume with no
+count ceiling is the real signal; whether index-conflict suppressions line
+up with saved losses (check `/api/suppressed` vs what the market did); QCB
+starvation via sl_noise_gate telemetry; A-tier population (65–79 band) and
+whether A outperforms B as designed.
 
 ---
 

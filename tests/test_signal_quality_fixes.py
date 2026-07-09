@@ -43,7 +43,12 @@ def _rows(n: int, base: str = "NIFTY", direction: str = "LONG", age: float = 360
     ]
 
 
-def test_rehydrate_restores_daily_cap() -> None:
+def test_rehydrate_restores_daily_cap(monkeypatch) -> None:
+    # Daily cap is OFF by default — configure one to prove rehydration
+    # restores the day's running total against it.
+    import src.scanner as scanner_mod
+
+    monkeypatch.setattr(scanner_mod, "_MAX_PER_DAY", 10)
     chain = GateChain()
     chain.rehydrate(_rows(10), _NOW)
     chain.begin_scan()
