@@ -310,18 +310,67 @@ async def test_seed_historical_seeds_higher_timeframes() -> None:
         for i in range(24)
     ]
 
-    mock_response = MagicMock()
-    mock_response.json.return_value = {"s": "ok", "candles": candle_data}
-    mock_response.raise_for_status = MagicMock()
+    # Resolution-aware mock: 5m data for the ring seed; the dedicated 15m
+    # HTF fetch fails so the seed exercises the aggregation fallback this
+    # test asserts.
+    async def _get(url, params=None, **kw):  # type: ignore[no-untyped-def]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        if params and params.get("resolution") == "5":
+            resp.json.return_value = {"s": "ok", "candles": candle_data}
+        else:
+            resp.json.return_value = {"s": "no_data", "candles": []}
+        return resp
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.get = AsyncMock(side_effect=_get)
     feed._http = mock_client
 
     await feed._seed_historical(now)
 
     assert len(feed._tick.get_candles_15m(_SYM)) == 8
     assert len(feed._tick.get_candles_60m(_SYM)) == 2
+
+
+async def test_seed_prefers_dedicated_15m_fetch_for_htf() -> None:
+    """When the 15m-resolution fetch succeeds, the 15m ring holds its bars
+    directly and 60m aggregates from them (converged regime EMAs, Session 17)
+    instead of the short 5m-window aggregation."""
+    feed = _make_feed()
+    feed._symbols = {_BASE: _SYM}
+
+    now = _ist(12, 0)
+    epoch = int(now.timestamp())
+    candle_5m = [
+        [epoch - (24 - i) * 300, 24000.0, 24010.0, 23990.0, 24005.0, 1000.0]
+        for i in range(24)
+    ]
+    # 48 consecutive 15m bars -> aggregates into 12 60m bars.
+    candle_15m = [
+        [epoch - (48 - i) * 900, 24000.0, 24010.0, 23990.0, 24005.0, 3000.0]
+        for i in range(48)
+    ]
+
+    async def _get(url, params=None, **kw):  # type: ignore[no-untyped-def]
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        res = params.get("resolution") if params else None
+        if res == "5":
+            resp.json.return_value = {"s": "ok", "candles": candle_5m}
+        elif res == "15":
+            resp.json.return_value = {"s": "ok", "candles": candle_15m}
+        else:
+            resp.json.return_value = {"s": "no_data", "candles": []}
+        return resp
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(side_effect=_get)
+    feed._http = mock_client
+
+    await feed._seed_historical(now)
+
+    assert len(feed._tick.get_candles_15m(_SYM)) >= 40
+    assert len(feed._tick.get_candles_60m(_SYM)) >= 10
 
 
 async def test_refresh_daily_reseeds_when_running() -> None:

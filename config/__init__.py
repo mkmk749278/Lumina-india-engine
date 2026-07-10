@@ -118,6 +118,19 @@ ALLOWED_BASES: tuple[str, ...] = tuple(
     if b.strip()
 )
 
+# Index bases that actually carry WEEKLY options. Since SEBI's Nov-2024
+# one-weekly-per-exchange rationalisation, NSE's weekly is NIFTY only —
+# BANKNIFTY / FINNIFTY / NIFTYNXT50 trade monthly options (last Tuesday).
+# Before this existed, every index base was treated as weekly-Tuesday
+# expiring: the IB16 +5 confidence bump fired on non-expiry Tuesdays and
+# EXPIRY_GAMMA_SQUEEZE armed on days with no expiring options (no gamma
+# pinning exists on such days). Env-overridable for the next SEBI revision.
+WEEKLY_OPTION_BASES: tuple[str, ...] = tuple(
+    b.strip().upper()
+    for b in _safe_str("INDIA_WEEKLY_OPTION_BASES", "NIFTY").split(",")
+    if b.strip()
+)
+
 # --- session clock (IST) -------------------------------------------------
 PREOPEN_START: time = _safe_time("INDIA_PREOPEN_START", time(9, 0))
 MARKET_OPEN: time = _safe_time("INDIA_MARKET_OPEN", time(9, 15))
@@ -376,6 +389,20 @@ FEED_RESTART_COOLDOWN_SEC: int = _safe_int(
 # telemetry instead of silently emitted.
 MIN_SL_ATR_MULT: float = _safe_float("INDIA_MIN_SL_ATR_MULT", 0.45)
 
+# --- trigger quality (Session 17, from the first clean half-day) -----------
+# A rejection/sweep trigger bar smaller than this many ATRs is lunch-doji
+# noise, not a rejection — a 3-point NIFTY doji and a 40-point capitulation
+# bar previously qualified identically for every pattern-triggered path.
+MIN_TRIGGER_RANGE_ATR: float = _safe_float("INDIA_MIN_TRIGGER_RANGE_ATR", 0.5)
+# Pattern-triggered paths (sweep/reclaim/rejection: LSR, SRF, DIV, OIS, PCR,
+# VIX) only judge the forming 5m bar once it is at least this fraction
+# elapsed — a "reclaim" or "pin bar" seen 40 seconds into a bar routinely
+# un-forms by the close. Live 2026-07-10 (first clean window): LSR went 1/9
+# with every loss a forming-bar reclaim that evaporated, and one SRF
+# candidate re-fired every 30s scan for 5 minutes straight. 0.8 means the
+# last ~minute of each 5m bar; a completed bar always qualifies.
+PATTERN_BAR_MIN_ELAPSED: float = _safe_float("INDIA_PATTERN_BAR_MIN_ELAPSED", 0.8)
+
 # --- confidence tiers ----------------------------------------------------
 # Emit floor and A+ cutoff on the 0-100 confidence score (spec §11/§13.1).
 # Below the floor a candidate is FILTERED (no FCM, no DB write).
@@ -390,7 +417,11 @@ MIN_SL_ATR_MULT: float = _safe_float("INDIA_MIN_SL_ATR_MULT", 0.45)
 # daily/per-scan caps (10/3, ranked best-first) bound the flood risk regardless.
 # This is the primary quality knob — raise it back toward 60-65 once the 30-day
 # outcome data shows the B-tier win rate. A+ cutoff (80) is unchanged: A+ scarce.
-CONFIDENCE_EMIT_FLOOR: float = _safe_float("INDIA_CONFIDENCE_EMIT_FLOOR", 50.0)
+# RAISED 50 -> 55 (Session 17): the first clean post-watchdog window
+# (2026-07-10, 88 signals, 62 resolved) split cleanly at 55 — the 50-54 band
+# ran 27.8% win / -0.99% cumulative while 55-59 ran 46.2% / +1.02%. The 50-54
+# band was 27% of all emissions and all of it was subscriber-visible noise.
+CONFIDENCE_EMIT_FLOOR: float = _safe_float("INDIA_CONFIDENCE_EMIT_FLOOR", 55.0)
 CONFIDENCE_A_PLUS: float = _safe_float("INDIA_CONFIDENCE_A_PLUS", 80.0)
 # The A tier (IB14: the ₹999 plan carries A and B signals; the app colour-codes
 # A+/A/B). tier_for() emitted only A+/B before Session 15 — the A band the
@@ -494,6 +525,13 @@ SRF_SL_ATR_MULT: float = _safe_float("SRF_SL_ATR_MULT", 0.5)
 SRF_MIN_SL_PCT: float = _safe_float("SRF_MIN_SL_PCT", 0.06)
 SRF_MAX_SL_PCT: float = _safe_float("SRF_MAX_SL_PCT", 1.50)
 SRF_MIN_RR: float = _safe_float("SRF_MIN_RR", 1.5)
+# A flip trade needs a mapped destination. Live 2026-07-10 (first clean
+# window): all 26 SRF emissions carried rr == exactly 1.5 — the LevelBook
+# target never once qualified, every signal shot the synthetic 1.5R fallback,
+# and the setup netted negative at 30% of total volume. When True, a candidate
+# whose book target does not clear SRF_MIN_RR is rejected instead of falling
+# back — SRF only fires when the flip has somewhere structural to go.
+SRF_REQUIRE_BOOK_TARGET: bool = _safe_bool("SRF_REQUIRE_BOOK_TARGET", True)
 
 # --- evaluator geometry: FAILED_AUCTION_RECLAIM (spec §10.9) -----------
 FAR_VOLUME_MULT: float = _safe_float("FAR_VOLUME_MULT", 1.2)

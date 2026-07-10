@@ -62,9 +62,19 @@ _CHAIN_POLL_INTERVAL = config._safe_int("FYERS_CHAIN_POLL_SEC", 300)
 _QUOTES_BATCH_SIZE = 50
 _VIX_SYMBOL = "NSE:INDIAVIX-INDEX"
 _HISTORY_RESOLUTION = "5"
+_HTF_RESOLUTION = "15"
 _DAILY_RESOLUTION = "D"
 # ~300 calendar days -> ~200 daily bars; classify() needs >= 56.
 _DAILY_FETCH_DAYS = 300
+# Higher-timeframe seed: aggregating 60m off the 360h 5m window yields ~70
+# bars — barely past EMA55's 56-bar minimum, leaving the regime EMAs (the
+# largest scoring component's input) ~a third weighted toward their seed
+# value. A dedicated 15m fetch reaches ~38 trading days (~950 bars, under
+# the ~1000-candle response cap) and aggregates into ~230 clock-aligned 60m
+# bars — properly converged. (Fyers' native "60" resolution is 09:15-session
+# -aligned and would misalign with the tick store's clock-hour live bars, so
+# we fetch 15m and aggregate.) One extra REST call per base per seed.
+_HTF_FETCH_DAYS = 55
 _MAX_CANDLES = 500
 
 # Fyers spot-index symbols for option-chain requests. The futures symbol is
@@ -354,13 +364,19 @@ class FyersDataFeed:
 
                 completed = [c for c in candles if c.ts < cur_bucket]
 
-                # 5m ring seeds the recent intraday tail; 15m/60m seed from the
-                # full window so the higher-timeframe regime has real history at
-                # session open (aggregating 60m off the short 5m tail would only
-                # yield a handful of bars).
+                # 5m ring seeds the recent intraday tail. 15m/60m seed from a
+                # dedicated ~38-trading-day 15m fetch so the 60m regime EMAs
+                # (EMA55 needs ~150 bars to converge) run on real history —
+                # aggregating off the 5m window yielded only ~70 bars. Falls
+                # back to aggregating the 5m window if the fetch fails.
                 recent = [c for c in completed if c.ts >= ring_cutoff] or completed
-                candles_15m = aggregate_candles(completed, 15)
-                candles_60m = aggregate_candles(completed, 60)
+                htf_15m = await self._fetch_htf_15m(base, symbol, now)
+                if htf_15m:
+                    candles_15m = htf_15m
+                    candles_60m = aggregate_candles(htf_15m, 60)
+                else:
+                    candles_15m = aggregate_candles(completed, 15)
+                    candles_60m = aggregate_candles(completed, 60)
                 self._tick.seed(symbol, recent, candles_15m, candles_60m)
 
                 # Rebuild today's day-open / opening range / intraday extremes
@@ -390,6 +406,52 @@ class FyersDataFeed:
 
         # Live volume deltas re-baseline against the fresh seed.
         self._cum_vol.reset()
+
+    async def _fetch_htf_15m(
+        self, base: str, symbol: str, now: datetime
+    ) -> list[Candle]:
+        """Fetch ~38 trading days of 15m candles for the higher-timeframe seed.
+
+        Best-effort: any failure returns [] and the caller falls back to
+        aggregating from the 5m window (the pre-Session-17 behaviour). The
+        still-forming 15m bucket is excluded — live ticks rebuild it.
+        """
+        if self._http is None:
+            return []
+        try:
+            resp = await self._http.get(
+                _HISTORY_URL,
+                params={
+                    "symbol": symbol,
+                    "resolution": _HTF_RESOLUTION,
+                    "date_format": "0",
+                    "range_from": str(
+                        int((now - timedelta(days=_HTF_FETCH_DAYS)).timestamp())
+                    ),
+                    "range_to": str(int(now.timestamp())),
+                    "cont_flag": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("s") != "ok":
+                logger.warning(
+                    "15m history fetch failed for {}: {}",
+                    base,
+                    data.get("message", "unknown"),
+                )
+                return []
+            candles = self._parse_history_candles(data.get("candles", []))
+            cur_bucket = now.replace(
+                minute=(now.minute // 15) * 15, second=0, microsecond=0
+            )
+            return [c for c in candles if c.ts < cur_bucket]
+        except httpx.HTTPError:
+            logger.opt(exception=True).warning(
+                "15m seed HTTP error for {} — falling back to aggregation",
+                base,
+            )
+            return []
 
     async def _seed_daily_regime(
         self, base: str, symbol: str, now: datetime

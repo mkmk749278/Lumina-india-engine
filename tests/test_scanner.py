@@ -76,8 +76,10 @@ def test_cooldown_gate_passes_after_cooldown() -> None:
 
     chain.record_emission(sig.setup_class, _BASE, sig.direction, now)
 
+    from src.scanner import _COOLDOWN_SEC
+
     result = chain.check(
-        sig, ctx, SessionState.OPEN, now + timedelta(seconds=600)
+        sig, ctx, SessionState.OPEN, now + timedelta(seconds=_COOLDOWN_SEC + 60)
     )
     assert result is None or result != "cooldown_gate"
 
@@ -389,7 +391,10 @@ def _make_scanner(evaluators: list[Evaluator] | None = None):
     return IndiaScanner(builder, session, expiry, evaluators=evaluators)
 
 
-def test_scanner_emits_signal_during_market_hours() -> None:
+def test_scanner_emits_signal_during_market_hours(monkeypatch) -> None:
+    # Scan-mechanics test: the fixture context scores in the low 50s, so pin
+    # the emit floor out of the way (calibration is tested elsewhere).
+    monkeypatch.setattr(config, "CONFIDENCE_EMIT_FLOOR", 0.0)
     scanner = _make_scanner([_AlwaysLongEvaluator()])
     now = _ist(11, 0)
     symbols = {_BASE: _SYM}
@@ -466,7 +471,8 @@ def test_scanner_no_signals_from_never_fire() -> None:
     assert len(signals) == 0
 
 
-def test_scanner_cooldown_prevents_second_scan() -> None:
+def test_scanner_cooldown_prevents_second_scan(monkeypatch) -> None:
+    monkeypatch.setattr(config, "CONFIDENCE_EMIT_FLOOR", 0.0)
     scanner = _make_scanner([_AlwaysLongEvaluator()])
     now = _ist(11, 0)
 
@@ -477,7 +483,8 @@ def test_scanner_cooldown_prevents_second_scan() -> None:
     assert len(second) == 0
 
 
-def test_scanner_reset_day() -> None:
+def test_scanner_reset_day(monkeypatch) -> None:
+    monkeypatch.setattr(config, "CONFIDENCE_EMIT_FLOOR", 0.0)
     scanner = _make_scanner([_AlwaysLongEvaluator()])
     now = _ist(11, 0)
 
@@ -488,7 +495,8 @@ def test_scanner_reset_day() -> None:
     assert len(signals) == 1
 
 
-def test_scanner_stamps_metadata() -> None:
+def test_scanner_stamps_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(config, "CONFIDENCE_EMIT_FLOOR", 0.0)
     scanner = _make_scanner([_AlwaysLongEvaluator()])
     signals = scanner.scan({_BASE: _SYM}, _ist(11, 0))
     sig = signals[0]

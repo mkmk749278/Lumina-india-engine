@@ -77,6 +77,10 @@ def make_context(
     # Fresh by default so setup-logic tests aren't suppressed; the
     # stale_data_gate tests pass None / a stale age explicitly.
     last_tick_age_sec: float | None = 0.0,
+    # Complete bar by default so setup-logic tests aren't suppressed; the
+    # pattern-bar-discipline tests pass a forming fraction explicitly.
+    bar_elapsed_fraction: float = 1.0,
+    key_levels_extra: list[float] | None = None,
 ) -> IndiaContext:
     # A test that supplies an opening range means it as a final level unless
     # it says otherwise (the pre-09:45 forming-range case sets this False).
@@ -116,4 +120,6 @@ def make_context(
         max_pain_strike=max_pain_strike,
         volume_avg_15m_20=volume_avg_15m_20,
         last_tick_age_sec=last_tick_age_sec,
+        bar_elapsed_fraction=bar_elapsed_fraction,
+        key_levels_extra=key_levels_extra if key_levels_extra is not None else [],
     )

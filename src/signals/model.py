@@ -141,6 +141,14 @@ class IndiaContext:
     # Intraday bias of this base's proxy index (src/dependency.py), stamped by
     # the scanner after all contexts are built: "LONG" | "SHORT" | "NEUTRAL".
     index_bias: str = "NEUTRAL"
+    # Elapsed fraction (0..1) of the forming 5m bar at scan time. 1.0 = the
+    # newest bar is complete (or effectively so). Pattern-triggered evaluators
+    # (sweep/reclaim/rejection) only judge a bar that is at least
+    # PATTERN_BAR_MIN_ELAPSED formed — a pin bar seen 40s into a bar routinely
+    # un-forms by the close (live 2026-07-10: LSR 1/9, all losses forming-bar
+    # reclaims that evaporated). Defaults to 1.0 so directly built contexts
+    # exercise setup logic; the builder stamps the real value.
+    bar_elapsed_fraction: float = 1.0
     # Age (seconds) of the newest *live tick* for this symbol at scan time.
     # None = no live tick has ever reached the store — the candles are pure
     # historical seed. The stale_data_gate suppresses on None or age above

@@ -24,6 +24,23 @@ from src.signals.model import Direction, IndiaContext, IndiaSignal, SetupClass
 from src.structure_state import last_swing_high, last_swing_low
 
 
+def _pattern_bar_ready(ctx: IndiaContext) -> bool:
+    """Pattern-triggered paths only judge a near-final 5m bar.
+
+    A sweep-reclaim / rejection seen 40 seconds into a bar routinely un-forms
+    by the close: live 2026-07-10 (first clean window) LSR went 1/9 with every
+    loss a forming-bar reclaim that evaporated, and one SRF candidate re-fired
+    on every 30s scan for 5 minutes straight. A completed bar always
+    qualifies (fraction 1.0)."""
+    return ctx.bar_elapsed_fraction >= config.PATTERN_BAR_MIN_ELAPSED
+
+
+def _min_trigger_range(ctx: IndiaContext) -> float:
+    """Minimum trigger-bar range (price units) for a rejection/sweep bar to
+    count as a real event rather than doji noise."""
+    return ctx.atr14_5m * config.MIN_TRIGGER_RANGE_ATR
+
+
 class LiquiditySweepReversal(Evaluator):
     """§10.1 — a 15m swing high/low is swept and reclaimed on the 5m candle.
 
@@ -40,8 +57,14 @@ class LiquiditySweepReversal(Evaluator):
             return None
         if ctx.volume_avg_5m_20 <= 0:
             return None
+        if not _pattern_bar_ready(ctx):
+            return None
 
         sweep = ctx.candles_5m[-1]
+        # A sweep bar smaller than the trigger floor is a wick of noise, not a
+        # liquidity grab — its "reclaim" carries no information.
+        if (sweep.high - sweep.low) < _min_trigger_range(ctx):
+            return None
         if ctx.current_volume_ratio() < config.LSR_VOLUME_MULT:
             return None
 
@@ -382,11 +405,15 @@ class IndiaVixExtreme(Evaluator):
             return None
         if ctx.regime_60m is Regime.TRENDING_DOWN:
             return None
+        if not _pattern_bar_ready(ctx):
+            return None
         current = ctx.candles_5m[-1]
         drop_pct = (ctx.day_open - current.close) / ctx.day_open * 100.0
         if drop_pct < config.VIX_EXTREME_MIN_DROP_PCT:
             return None
-        if not is_bullish_rejection(current, ctx.candles_5m[-2]):
+        if not is_bullish_rejection(
+            current, ctx.candles_5m[-2], min_range=_min_trigger_range(ctx)
+        ):
             return None
         if rsi([c.close for c in ctx.candles_5m], 14) >= config.VIX_EXTREME_RSI_MAX:
             return None
@@ -435,9 +462,12 @@ class PcrExtreme(Evaluator):
     def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
         if not self.enabled or len(ctx.candles_5m) < 2 or len(ctx.candles_15m) < 3:
             return None
+        if not _pattern_bar_ready(ctx):
+            return None
         current, prev = ctx.candles_5m[-1], ctx.candles_5m[-2]
         atr = ctx.atr14_5m
         tol = atr * config.PCR_NEAR_LEVEL_ATR_MULT
+        min_range = _min_trigger_range(ctx)
         swing_low = last_swing_low(ctx.candles_15m, lookback=20, width=1)
         swing_high = last_swing_high(ctx.candles_15m, lookback=20, width=1)
 
@@ -447,7 +477,9 @@ class PcrExtreme(Evaluator):
             )
             if level is None or abs(current.close - level) > tol:
                 return None
-            if ctx.oi_change_15m_pct <= 0 or not is_bullish_rejection(current, prev):
+            if ctx.oi_change_15m_pct <= 0 or not is_bullish_rejection(
+                current, prev, min_range=min_range
+            ):
                 return None
             target = _nearest_above(current.close, [swing_high, ctx.opening_range_high])
             return self._build(ctx, Direction.LONG, current.close, level, target)
@@ -458,7 +490,9 @@ class PcrExtreme(Evaluator):
             )
             if level is None or abs(current.close - level) > tol:
                 return None
-            if ctx.oi_change_15m_pct <= 0 or not is_bearish_rejection(current, prev):
+            if ctx.oi_change_15m_pct <= 0 or not is_bearish_rejection(
+                current, prev, min_range=min_range
+            ):
                 return None
             target = _nearest_below(current.close, [swing_low, ctx.opening_range_low])
             return self._build(ctx, Direction.SHORT, current.close, level, target)
@@ -629,9 +663,12 @@ class OiSpikeReversal(Evaluator):
             return None
         if ctx.current_oi < config.OIS_MIN_OI:
             return None
+        if not _pattern_bar_ready(ctx):
+            return None
         current, prev = ctx.candles_5m[-1], ctx.candles_5m[-2]
         atr = ctx.atr14_5m
         tol = atr * config.OIS_NEAR_LEVEL_ATR_MULT
+        min_range = _min_trigger_range(ctx)
         step = config.round_step_for(ctx.base, current.close)
         base_round = round(current.close / step) * step
         swing_low = last_swing_low(ctx.candles_15m, lookback=20, width=1)
@@ -642,7 +679,7 @@ class OiSpikeReversal(Evaluator):
             [swing_low, ctx.prev_day_low, ctx.prev_day_close, base_round - step, base_round],
         )
         if support is not None and abs(current.close - support) <= tol:
-            if is_bullish_rejection(current, prev):
+            if is_bullish_rejection(current, prev, min_range=min_range):
                 target = _nearest_above(
                     current.close, [swing_high, ctx.opening_range_high, ctx.prev_day_high]
                 )
@@ -653,7 +690,7 @@ class OiSpikeReversal(Evaluator):
             [swing_high, ctx.prev_day_high, ctx.prev_day_close, base_round, base_round + step],
         )
         if resistance is not None and abs(current.close - resistance) <= tol:
-            if is_bearish_rejection(current, prev):
+            if is_bearish_rejection(current, prev, min_range=min_range):
                 target = _nearest_below(
                     current.close, [swing_low, ctx.opening_range_low, ctx.prev_day_low]
                 )
@@ -720,6 +757,8 @@ class SrFlipRetest(Evaluator):
             return None
         if len(ctx.candles_5m) < 2 or len(ctx.candles_15m) < 6:
             return None
+        if not _pattern_bar_ready(ctx):
+            return None
         current, prev = ctx.candles_5m[-1], ctx.candles_5m[-2]
         atr5 = ctx.atr14_5m
         if atr5 <= 0:
@@ -760,7 +799,9 @@ class SrFlipRetest(Evaluator):
                     abs(current.close - resistance.price) <= retest_tol
                 )
                 if broke_below and near_retest:
-                    if is_bearish_rejection(current, prev):
+                    if is_bearish_rejection(
+                        current, prev, min_range=_min_trigger_range(ctx)
+                    ):
                         return self._build(
                             ctx, Direction.SHORT, current, resistance.price,
                             book,
@@ -775,7 +816,9 @@ class SrFlipRetest(Evaluator):
                 )
                 near_retest = abs(current.close - support.price) <= retest_tol
                 if broke_above and near_retest:
-                    if is_bullish_rejection(current, prev):
+                    if is_bullish_rejection(
+                        current, prev, min_range=_min_trigger_range(ctx)
+                    ):
                         return self._build(
                             ctx, Direction.LONG, current, support.price, book
                         )
@@ -792,12 +835,7 @@ class SrFlipRetest(Evaluator):
     ) -> IndiaSignal | None:
         entry = bar.close
         pad = ctx.atr14_5m * config.SRF_SL_ATR_MULT
-        if direction == Direction.SHORT:
-            sl = bar.high + pad
-            target_level = book.nearest_support(entry)
-        else:
-            sl = bar.low - pad
-            target_level = book.nearest_resistance(entry)
+        sl = bar.high + pad if direction == Direction.SHORT else bar.low - pad
 
         sl_dist = abs(entry - sl)
         if entry <= 0 or sl_dist <= 0:
@@ -806,17 +844,35 @@ class SrFlipRetest(Evaluator):
         if not (config.SRF_MIN_SL_PCT <= sl_pct <= config.SRF_MAX_SL_PCT):
             return None
 
-        fallback = (
-            entry - sl_dist * config.SRF_MIN_RR
-            if direction == Direction.SHORT
-            else entry + sl_dist * config.SRF_MIN_RR
-        )
-        if target_level is not None:
-            candidate = target_level.price
-            cand_rr = abs(candidate - entry) / sl_dist if sl_dist > 0 else 0
-            tp1 = candidate if cand_rr >= config.SRF_MIN_RR else fallback
+        # A flip trade needs a mapped destination: the nearest book level at
+        # least SRF_MIN_RR away (the *adjacent* level is nearly always a round
+        # number one step away — useless as a target). Live 2026-07-10: all 26
+        # SRF emissions carried rr == exactly 1.5 because the adjacent level
+        # never cleared min R:R and every signal shot the synthetic fallback,
+        # netting negative at 30% of total volume. Default posture: no
+        # structural level far enough to pay for the stop -> no signal.
+        min_dist = sl_dist * config.SRF_MIN_RR
+        if direction == Direction.SHORT:
+            qualifying = [
+                lv.price for lv in book.levels() if lv.price <= entry - min_dist
+            ]
+            book_target = max(qualifying) if qualifying else None
         else:
-            tp1 = fallback
+            qualifying = [
+                lv.price for lv in book.levels() if lv.price >= entry + min_dist
+            ]
+            book_target = min(qualifying) if qualifying else None
+
+        if book_target is not None:
+            tp1 = book_target
+        elif config.SRF_REQUIRE_BOOK_TARGET:
+            return None
+        else:
+            tp1 = (
+                entry - min_dist
+                if direction == Direction.SHORT
+                else entry + min_dist
+            )
         tp1_pct = abs(tp1 - entry) / entry * 100.0
         rr = tp1_pct / sl_pct if sl_pct > 0 else 0.0
         return _make_signal(
@@ -963,6 +1019,8 @@ class DivergenceContinuation(Evaluator):
     def evaluate(self, ctx: IndiaContext) -> IndiaSignal | None:
         if not self.enabled:
             return None
+        if not _pattern_bar_ready(ctx):
+            return None
         lb = config.DIV_LOOKBACK
         need = lb + 15
         if len(ctx.candles_5m) < need:
@@ -996,7 +1054,7 @@ class DivergenceContinuation(Evaluator):
             and rsi_at_prior_high >= rsi_extreme_high
             and rsi_now <= rsi_at_prior_high - margin
             and rsi_now > 40
-            and is_bearish_rejection(current, prev)
+            and is_bearish_rejection(current, prev, min_range=_min_trigger_range(ctx))
         ):
             div_high = current_high_val
             return self._build(ctx, Direction.SHORT, current.close, div_high)
@@ -1016,7 +1074,7 @@ class DivergenceContinuation(Evaluator):
             and rsi_at_prior_low <= rsi_extreme_low
             and rsi_now >= rsi_at_prior_low + margin
             and rsi_now < 60
-            and is_bullish_rejection(current, prev)
+            and is_bullish_rejection(current, prev, min_range=_min_trigger_range(ctx))
         ):
             div_low = current_low_val
             return self._build(ctx, Direction.LONG, current.close, div_low)
