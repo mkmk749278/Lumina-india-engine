@@ -99,6 +99,8 @@ class AngelDataFeed:
         # Monotonic clock of the last tick delivered (watchdog input; reset
         # at start() so a fresh feed gets a grace window).
         self._last_tick_mono: float | None = None
+        # Event loop for the single-writer tick handoff (see _process_tick).
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     # ── Credentials ─────────────────────────────────────────────────────
 
@@ -124,6 +126,7 @@ class AngelDataFeed:
     async def start(self) -> None:
         """Login, resolve tokens, seed history, start WebSocket + re-login task."""
         self._running = True
+        self._loop = asyncio.get_running_loop()
         self._last_tick_mono = time_mod.monotonic()  # grace until first tick
         await asyncio.to_thread(self._login)
         await asyncio.to_thread(self._resolve_tokens)
@@ -404,7 +407,9 @@ class AngelDataFeed:
             self._ws = None
 
     def _process_tick(self, tick: Any) -> None:
-        """SNAP_QUOTE message → stores. Prices arrive as int paise."""
+        """SNAP_QUOTE message (WebSocket thread) → parse, then hand to the
+        event loop for ingestion (single-writer discipline — see the Fyers
+        feed's _process_tick for the rationale). Prices arrive as int paise."""
         if not self._running or not isinstance(tick, dict):
             return
 
@@ -422,7 +427,24 @@ class AngelDataFeed:
             if ts_ms > 0
             else datetime.now(config.IST)
         )
+        cum_volume = float(tick.get("volume_trade_for_the_day", 0) or 0)
+        oi = float(tick.get("open_interest", 0) or 0)
 
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            self._ingest_tick(token, ltp, cum_volume, oi, ts)  # tests / no loop
+            return
+        try:
+            loop.call_soon_threadsafe(
+                self._ingest_tick, token, ltp, cum_volume, oi, ts
+            )
+        except RuntimeError:
+            pass  # loop shutting down — drop the tick
+
+    def _ingest_tick(
+        self, token: str, ltp: float, cum_volume: float, oi: float, ts: datetime
+    ) -> None:
+        """Store mutation — runs on the event loop (single writer)."""
         if token == self._vix_token and self._vix_token:
             self._mkt.update_vix(ltp)
             return
@@ -433,10 +455,8 @@ class AngelDataFeed:
 
         # volume_trade_for_the_day is cumulative — the store needs the
         # per-tick increment (see CumulativeVolume).
-        cum_volume = float(tick.get("volume_trade_for_the_day", 0) or 0)
         volume = self._cum_vol.delta(symbol, cum_volume, ts)
         self._tick.on_tick(symbol, ltp, volume, ts)
 
-        oi = float(tick.get("open_interest", 0) or 0)
         if oi > 0:
             self._oi.update_oi(symbol, oi, ts)

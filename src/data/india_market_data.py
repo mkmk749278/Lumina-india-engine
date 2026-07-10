@@ -9,12 +9,23 @@ CLAUDE.md cost discipline: in-memory only.
 
 from __future__ import annotations
 
+import time
+
+import config
+
 
 class IndiaMarketData:
     """VIX + max-pain tracking for the scanner context."""
 
     def __init__(self) -> None:
         self._vix: float = 0.0
+        # Monotonic clock of the last VIX update. A VIX whose feed silently
+        # died must read as *unavailable* (0.0 — consumers already fail safe:
+        # no low-VIX scoring bonus, no event-risk trip, VIX-extreme cannot
+        # arm), not as its last observation — a 3-hour-old 24.9 sitting just
+        # under the event threshold while real VIX spikes is exactly the
+        # silent lie the tick-freshness layer exists to prevent.
+        self._vix_mono: float | None = None
         self._max_pain: dict[str, float] = {}
 
     # ------------------------------------------------------------------
@@ -23,6 +34,7 @@ class IndiaMarketData:
 
     def update_vix(self, vix: float) -> None:
         self._vix = vix
+        self._vix_mono = time.monotonic()
 
     def update_max_pain(self, base: str, strike: float) -> None:
         """Set the computed max-pain strike for an index base."""
@@ -73,6 +85,11 @@ class IndiaMarketData:
     # ------------------------------------------------------------------
 
     def get_vix(self) -> float:
+        """Last VIX, or 0.0 (= unavailable) once the reading has gone stale."""
+        if self._vix_mono is None:
+            return 0.0
+        if time.monotonic() - self._vix_mono > config.VIX_TTL_SEC:
+            return 0.0
         return self._vix
 
     def get_max_pain(self, base: str) -> float | None:

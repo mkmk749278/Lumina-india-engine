@@ -1,6 +1,6 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-10 (Session 17 — signal-quality pass from the first clean half-day: pattern-bar discipline, ATR trigger floor, SRF mapped targets, floor 55, cooldown 900s, NIFTY-only weekly expiry, VWAP confluence, converged 60m seed)
+**Last updated:** 2026-07-10 (Session 18 — stability-audit implementation: owner alerts, batched FCM, self-healing escalation + autoheal, DB backup/indexes, VIX/OI TTLs, single-writer ticks, concurrent reseed)
 
 ---
 
@@ -327,6 +327,72 @@ not the volume gates.
 
 ---
 
+## Session 18 — Stability-audit implementation (2026-07-10 PM, owner-directed)
+
+Owner cleared signal history (clean quality window collecting) and directed:
+implement the engine-stability audit while waiting for data. Everything from
+the audit's "Now" tier plus most of "Next", one PR:
+
+**Escalation & self-healing (the audit's core theme — make silence impossible):**
+1. **Owner alerts** (`src/owner_alerts.py` + `dispatch_owner_alert`): FCM to
+   the owner's device on a dedicated "engine-alerts" Android channel for:
+   feed stalled (watchdog firing), feed restart failed, session OPEN with no
+   feed (the forgot-the-token morning), engine self-restart. Per-kind
+   cooldown `INDIA_OWNER_ALERT_COOLDOWN_SEC` (1800). **Set INDIA_OWNER_UIDS
+   before subscriber onboarding** — until then alerts go to all registered
+   tokens (Phase-1 single-user posture, documented in .env.example).
+2. **Process-suicide escalation**: > `INDIA_FEED_SUICIDE_AFTER_RESTARTS` (3)
+   consecutive watchdog restarts without a revived tick → alert + exit(1);
+   `restart: always` boots a clean process — the only guaranteed cure for a
+   wedged fyers-SDK singleton.
+3. **Autoheal sidecar** (`india-autoheal`, compose): restarts any container
+   whose healthcheck reports unhealthy — Docker's `restart: always` never
+   acted on health status, so a hung-but-alive engine was detected and then
+   ignored forever.
+
+**Scale bomb defused:**
+4. **FCM batched + off-loop**: `messaging.send_each` (500/batch) via
+   `asyncio.to_thread`, stale tokens pruned from batch responses. The old
+   per-token synchronous `send()` on the event loop would have frozen the
+   engine ~15–40s per signal at ~100 subscribers.
+
+**Data honesty (freshness doctrine completed):**
+5. **VIX TTL** (`INDIA_VIX_TTL_SEC` 600): stale VIX reads 0.0/unavailable —
+   consumers already fail safe (no low-VIX bonus, no event-risk trip, VIX
+   evaluator can't arm). **OI TTL** (`INDIA_OI_TTL_SEC` 600) on current OI +
+   15m change; **PCR TTL** (`INDIA_PCR_TTL_SEC` 1800) reads neutral when the
+   chain poll dies.
+6. **Single-writer tick handoff**: both feeds now parse on the WS thread and
+   mutate the stores on the event loop via `call_soon_threadsafe` (inline
+   fallback when no loop — tests/pre-start). Deletes the whole torn-read
+   class (building-candle updates, day-rollover reset raced the scanner/API
+   with zero synchronisation).
+
+**Database layer:**
+7. **Nightly backup** (`src/db_backup.py`): `VACUUM INTO` dated snapshot to
+   `<data>/backups/` at the session-close transition, retention
+   `INDIA_DB_BACKUP_KEEP` (14). The DB is the 30-day quality evidence and
+   had no copy anywhere.
+8. **Indexes** on `created_at` (signals/suppressions/outcomes) + all date
+   predicates rewritten sargable (range form; `DATE(col)=` can never use an
+   index). Ops date-range fan-outs stop degrading with table growth.
+
+**Ops polish:** seeding now runs 5-way concurrent (`FYERS_SEED_CONCURRENCY`)
+— the 46-base sequential reseed was a 1–2 min feed-down window on every
+boot/hot-swap/watchdog restart; SDK thread-joins moved off the event loop
+(`asyncio.to_thread`); static-token compares use `hmac.compare_digest`;
+optional rotating file log sink (`INDIA_LOG_DIR`, compose sets
+`/app/data/logs`, 10 MB × 14 days) since docker json logs cap at ~30 MB.
+
+419 tests green (10 new in test_stability_s18.py), ruff + mypy clean.
+
+**Still open from the audit (deliberately deferred):** CLAUDE.md
+architecture/module-map rewrite + Redis remove-or-reserve decision; feed
+process isolation (only if the SDK misbehaves through the watchdog+suicide
+net); ops rate-limit check for 92-day fan-outs.
+
+---
+
 ## Session 17 — Signal-quality pass (2026-07-10 PM, owner-directed)
 
 Owner supplied the first **clean** (post-watchdog) outcome data — the
@@ -620,6 +686,7 @@ tight — revisit with outcome data if two same-sector signals genuinely differ.
 
 | Session | Date | Key outcomes |
 |---|---|---|
+| 18 | 2026-07-10 | **Stability-audit implementation** (see section above). Owner alerts via FCM (feed stall/down/no-feed-at-open/self-restart), batched off-loop FCM (send_each), process-suicide escalation + autoheal sidecar, nightly DB backup + indexes + sargable queries, VIX/OI/PCR staleness TTLs, single-writer tick handoff, 5-way concurrent reseed, off-loop SDK joins, compare_digest, file log sink. 419 tests green. |
 | 17 | 2026-07-10 | **Signal-quality pass on first clean data** (see section above). Half-day flood (88 signals/2h20m) dissected: LSR 1/9 on forming-bar flicker, SRF 26/26 synthetic fallback targets, 50–54 conf band cleanly negative, 12 duplicate pairs. Shipped pattern-bar discipline, ATR trigger floor, SRF mapped-destination requirement, floor 55, cooldown 900s, NIFTY-only weekly expiry, VWAP confluence (dead scaffold wired), converged 60m seed. 408 tests green. Quality window restarts 2026-07-10. |
 | 16 | 2026-07-10 | **Frozen-feed incident** (see section above). WebSocket died silently; scanner emitted duplicate frozen-data signals, live P&L pinned +0.00%, outcomes never resolved. Added stale_data_gate, feed watchdog (auto-restart), WS lifecycle fixes (reconnect_retry=50, subscribe-when-open), fresh-only live overlay, feed health on ops Pulse. 392 tests green. |
 | 15 | 2026-07-09 | **Live-outcome-driven fixes** (see section above). First real performance data analysed (27.8% win, PF 0.73): restart bursts quadrupled the daily cap (gate-state rehydration added), ORB fired on 30s of range (09:45 lock), DIV mass-fire tightened, warm-up/flood/index-conflict/SL-noise gates added, chase guards, A tier created. 365 tests green. Owner-sign-off item (evaluator + gate changes). |

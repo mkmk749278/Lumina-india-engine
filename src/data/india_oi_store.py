@@ -10,9 +10,12 @@ network call, capped at 1/min — well below any cost concern.
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+
+import config
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,9 @@ class IndiaOIStore:
         self._max = max_snapshots
 
         self._oi: dict[str, deque[OISnapshot]] = {}
+        # Monotonic clock of the last successful chain poll — stale PCR
+        # reads neutral, same freshness doctrine as VIX/ticks.
+        self._pcr_mono: float | None = None
         # Per-base option-chain OI totals; market-wide PCR is computed over
         # the sum so alternating NIFTY/BANKNIFTY chain polls don't make the
         # ratio flip between two different per-index values.
@@ -57,21 +63,29 @@ class IndiaOIStore:
         """Update option-chain OI aggregates for one index *base*."""
         self._put_oi_by_base[base] = total_put_oi
         self._call_oi_by_base[base] = total_call_oi
+        self._pcr_mono = time.monotonic()
 
     # ------------------------------------------------------------------
     # Readers (consumed by context builder)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _fresh(snap: OISnapshot) -> bool:
+        """The OI poller stopped delivering -> the value is unavailable, not
+        its last observation (consumers fail safe on 0.0)."""
+        age = datetime.now(snap.ts.tzinfo) - snap.ts
+        return age <= timedelta(seconds=config.OI_TTL_SEC)
+
     def get_current_oi(self, symbol: str) -> float:
         snaps = self._oi.get(symbol)
-        if not snaps:
+        if not snaps or not self._fresh(snaps[-1]):
             return 0.0
         return snaps[-1].oi
 
     def get_oi_change_15m_pct(self, symbol: str) -> float:
         """OI change over the last ~15 minutes as a percentage."""
         snaps = self._oi.get(symbol)
-        if not snaps or len(snaps) < 2:
+        if not snaps or len(snaps) < 2 or not self._fresh(snaps[-1]):
             return 0.0
         latest = snaps[-1]
         target_ts = latest.ts - timedelta(minutes=15)
@@ -86,7 +100,13 @@ class IndiaOIStore:
         return ((latest.oi - baseline.oi) / baseline.oi) * 100.0
 
     def get_pcr(self) -> float:
-        """Market-wide PCR over all polled index chains (0.0 if none yet)."""
+        """Market-wide PCR over all polled index chains (0.0 if none yet or
+        the chain poll has gone stale)."""
+        if (
+            self._pcr_mono is None
+            or time.monotonic() - self._pcr_mono > config.PCR_TTL_SEC
+        ):
+            return 0.0
         total_calls = sum(self._call_oi_by_base.values())
         total_puts = sum(self._put_oi_by_base.values())
         return total_puts / total_calls if total_calls > 0 else 0.0

@@ -93,6 +93,11 @@ _INDEX_CHAIN_SYMBOL: dict[str, str] = {
 # could not form for ~9 trading days after a (re)seed and sat permanently RANGING.
 _FETCH_WINDOW_HOURS = 360
 _RING_SEED_HOURS = 6
+# Bases seeding in flight at once. Sequential seeding of 46 bases × 3 REST
+# calls was a 1-2 minute feed-down window on every boot/refresh/hot-swap/
+# watchdog restart; 5-way concurrency cuts it ~5x while staying polite to
+# Fyers' per-second rate limits.
+_SEED_CONCURRENCY = config._safe_int("FYERS_SEED_CONCURRENCY", 5)
 
 _REDACTED = "***REDACTED***"
 
@@ -186,8 +191,13 @@ class FyersDataFeed:
         if self._oi_task and not self._oi_task.done():
             self._oi_task.cancel()
         if self._ws is not None:
+            ws = self._ws
             try:
-                self._ws.close_connection()
+                # close_connection() joins the SDK's socket/message/ping
+                # threads — a hard multi-second block if run on the event
+                # loop (every hot-swap and watchdog restart goes through
+                # here), so it runs in a worker thread.
+                await asyncio.to_thread(ws.close_connection)
             except Exception:
                 pass
         if self._http:
@@ -306,12 +316,18 @@ class FyersDataFeed:
     async def _seed_historical(self, now: datetime) -> None:
         """Seed the tick store and derive previous-session levels.
 
-        The fetch window reaches back far enough (96h) to contain the
-        previous trading session across a weekend or single holiday;
+        The fetch window reaches back far enough to contain the previous
+        trading session across a weekend or single holiday;
         prev_session_levels buckets by date and picks the latest pre-today
         session, so PDH / PDL / prev-close reach the evaluators. Only the
         recent tail is seeded into the ring buffer to keep its 200-candle
         budget intact.
+
+        Bases seed under bounded concurrency: sequentially, 46 bases ×
+        3 REST calls each was a 1–2 minute feed-down window at every boot,
+        daily refresh, token hot-swap and watchdog restart. The semaphore
+        keeps the burst polite to Fyers' rate limits while cutting the
+        window ~5×.
         """
         assert self._http is not None
 
@@ -324,88 +340,114 @@ class FyersDataFeed:
             minute=(now.minute // 5) * 5, second=0, microsecond=0
         )
 
-        for base, symbol in self._symbols.items():
-            try:
-                resp = await self._http.get(
-                    _HISTORY_URL,
-                    params={
-                        "symbol": symbol,
-                        "resolution": _HISTORY_RESOLUTION,
-                        "date_format": "0",
-                        "range_from": str(range_from),
-                        "range_to": str(range_to),
-                        "cont_flag": "1",
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        sem = asyncio.Semaphore(_SEED_CONCURRENCY)
 
-                if data.get("s") != "ok":
-                    logger.warning(
-                        "historical fetch failed for {}: {}",
-                        base,
-                        data.get("message", "unknown"),
-                    )
-                    continue
-
-                candles = self._parse_history_candles(data.get("candles", []))
-                if not candles:
-                    logger.warning("no candles returned for {}", base)
-                    continue
-
-                levels = prev_session_levels(candles, now.date())
-                if levels and self._on_prev_day is not None:
-                    self._on_prev_day(symbol, *levels)
-                    logger.info(
-                        "prev-day levels for {}: H={:.1f} L={:.1f} C={:.1f}",
-                        base,
-                        *levels,
-                    )
-
-                completed = [c for c in candles if c.ts < cur_bucket]
-
-                # 5m ring seeds the recent intraday tail. 15m/60m seed from a
-                # dedicated ~38-trading-day 15m fetch so the 60m regime EMAs
-                # (EMA55 needs ~150 bars to converge) run on real history —
-                # aggregating off the 5m window yielded only ~70 bars. Falls
-                # back to aggregating the 5m window if the fetch fails.
-                recent = [c for c in completed if c.ts >= ring_cutoff] or completed
-                htf_15m = await self._fetch_htf_15m(base, symbol, now)
-                if htf_15m:
-                    candles_15m = htf_15m
-                    candles_60m = aggregate_candles(htf_15m, 60)
-                else:
-                    candles_15m = aggregate_candles(completed, 15)
-                    candles_60m = aggregate_candles(completed, 60)
-                self._tick.seed(symbol, recent, candles_15m, candles_60m)
-
-                # Rebuild today's day-open / opening range / intraday extremes
-                # so a mid-session (re)start doesn't blind ORB/FAR and the
-                # circuit gate for the rest of the day. The forming bucket is
-                # fine to include here — extremes only extend.
-                todays = [c for c in candles if c.ts.date() == now.date()]
-                if todays:
-                    self._tick.seed_intraday_state(symbol, todays, now)
-
-                logger.info(
-                    "seeded {} with {} 5m / {} 15m / {} 60m candles"
-                    " ({} bars today)",
-                    base,
-                    len(recent),
-                    len(candles_15m),
-                    len(candles_60m),
-                    len(todays),
+        async def _bounded(base: str, symbol: str) -> None:
+            async with sem:
+                await self._seed_one(
+                    base, symbol, now, range_from, range_to,
+                    ring_cutoff, cur_bucket,
                 )
 
-                await self._seed_daily_regime(base, symbol, now)
-
-            except httpx.HTTPError:
-                logger.opt(exception=True).warning(
-                    "historical seed HTTP error for {}", base
-                )
+        await asyncio.gather(
+            *(_bounded(b, s) for b, s in self._symbols.items())
+        )
 
         # Live volume deltas re-baseline against the fresh seed.
         self._cum_vol.reset()
+
+    async def _seed_one(
+        self,
+        base: str,
+        symbol: str,
+        now: datetime,
+        range_from: int,
+        range_to: int,
+        ring_cutoff: datetime,
+        cur_bucket: datetime,
+    ) -> None:
+        """Seed one base (5m ring + HTF buffers + intraday state + daily
+        regime). Best-effort — a failure leaves that base unseeded and never
+        disturbs its siblings."""
+        assert self._http is not None
+        try:
+            resp = await self._http.get(
+                _HISTORY_URL,
+                params={
+                    "symbol": symbol,
+                    "resolution": _HISTORY_RESOLUTION,
+                    "date_format": "0",
+                    "range_from": str(range_from),
+                    "range_to": str(range_to),
+                    "cont_flag": "1",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get("s") != "ok":
+                logger.warning(
+                    "historical fetch failed for {}: {}",
+                    base,
+                    data.get("message", "unknown"),
+                )
+                return
+
+            candles = self._parse_history_candles(data.get("candles", []))
+            if not candles:
+                logger.warning("no candles returned for {}", base)
+                return
+
+            levels = prev_session_levels(candles, now.date())
+            if levels and self._on_prev_day is not None:
+                self._on_prev_day(symbol, *levels)
+                logger.info(
+                    "prev-day levels for {}: H={:.1f} L={:.1f} C={:.1f}",
+                    base,
+                    *levels,
+                )
+
+            completed = [c for c in candles if c.ts < cur_bucket]
+
+            # 5m ring seeds the recent intraday tail. 15m/60m seed from a
+            # dedicated ~38-trading-day 15m fetch so the 60m regime EMAs
+            # (EMA55 needs ~150 bars to converge) run on real history —
+            # aggregating off the 5m window yielded only ~70 bars. Falls
+            # back to aggregating the 5m window if the fetch fails.
+            recent = [c for c in completed if c.ts >= ring_cutoff] or completed
+            htf_15m = await self._fetch_htf_15m(base, symbol, now)
+            if htf_15m:
+                candles_15m = htf_15m
+                candles_60m = aggregate_candles(htf_15m, 60)
+            else:
+                candles_15m = aggregate_candles(completed, 15)
+                candles_60m = aggregate_candles(completed, 60)
+            self._tick.seed(symbol, recent, candles_15m, candles_60m)
+
+            # Rebuild today's day-open / opening range / intraday extremes
+            # so a mid-session (re)start doesn't blind ORB/FAR and the
+            # circuit gate for the rest of the day. The forming bucket is
+            # fine to include here — extremes only extend.
+            todays = [c for c in candles if c.ts.date() == now.date()]
+            if todays:
+                self._tick.seed_intraday_state(symbol, todays, now)
+
+            logger.info(
+                "seeded {} with {} 5m / {} 15m / {} 60m candles"
+                " ({} bars today)",
+                base,
+                len(recent),
+                len(candles_15m),
+                len(candles_60m),
+                len(todays),
+            )
+
+            await self._seed_daily_regime(base, symbol, now)
+
+        except httpx.HTTPError:
+            logger.opt(exception=True).warning(
+                "historical seed HTTP error for {}", base
+            )
 
     async def _fetch_htf_15m(
         self, base: str, symbol: str, now: datetime
@@ -632,16 +674,20 @@ class FyersDataFeed:
             self._process_tick(message)
 
     def _process_tick(self, tick: dict[str, Any]) -> None:
-        """Parse a single Fyers tick and feed stores.
+        """Parse a single Fyers tick (WebSocket thread) and hand it to the
+        event loop for ingestion.
 
         Fyers SymbolUpdate fields:
           symbol, ltp, vol_traded_today, open_price, high_price, low_price,
           close_price, ch, chp, timestamp, ...
 
-        ``vol_traded_today`` is the *cumulative* day volume — the store needs
-        the per-tick increment, so it goes through the delta tracker first
-        (feeding the raw running total inflated live-bar volume by orders of
-        magnitude and made every volume gate pass trivially).
+        Parsing stays on the SDK thread; all store *mutation* happens on the
+        event loop via ``call_soon_threadsafe`` — the stores are plain dicts/
+        deques with multi-step invariants (building-candle updates, the
+        day-rollover reset) and were previously written from this thread
+        while the scanner/API read them concurrently with no synchronisation.
+        Single-writer discipline deletes that whole class of torn reads;
+        at ~46 ticks/s the loop hop is noise.
         """
         symbol = tick.get("symbol", "")
         ltp = tick.get("ltp", 0.0)
@@ -658,10 +704,30 @@ class FyersDataFeed:
         else:
             ts = datetime.now(config.IST)
 
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            self._ingest_tick(symbol, ltp, cum_volume, ts)  # tests / no loop
+            return
+        try:
+            loop.call_soon_threadsafe(
+                self._ingest_tick, symbol, ltp, cum_volume, ts
+            )
+        except RuntimeError:
+            pass  # loop shutting down — drop the tick
+
+    def _ingest_tick(
+        self, symbol: str, ltp: float, cum_volume: float, ts: datetime
+    ) -> None:
+        """Store mutation — runs on the event loop (single writer).
+
+        ``vol_traded_today`` is the *cumulative* day volume — the store needs
+        the per-tick increment, so it goes through the delta tracker first
+        (feeding the raw running total inflated live-bar volume by orders of
+        magnitude and made every volume gate pass trivially).
+        """
         if symbol == _VIX_SYMBOL:
             self._mkt.update_vix(ltp)
             return
-
         volume = self._cum_vol.delta(symbol, cum_volume, ts)
         self._tick.on_tick(symbol, ltp, volume, ts)
 

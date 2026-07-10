@@ -14,6 +14,7 @@ and never on a hot path (not per-tick, not per-scan).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any
@@ -184,12 +185,75 @@ def _build_data(sig: IndiaSignal) -> dict[str, str]:
     }
 
 
-async def dispatch(sig: IndiaSignal) -> int:
-    """Send FCM push to all registered tokens. Returns count of messages sent.
+# FCM's batch API accepts up to 500 messages per call.
+_FCM_BATCH_SIZE = 500
 
-    Best-effort: failures are logged, never raised. A failed push must not
-    block signal storage or subsequent signals.
+
+async def _send_batch(
+    tokens: list[str],
+    notification: Any,
+    data: dict[str, str],
+    channel_id: str,
+) -> int:
+    """Send one message per token via the batch API, off the event loop.
+
+    The previous implementation called the *synchronous* ``messaging.send``
+    once per token on the event loop — one blocking HTTPS round trip per
+    subscriber, freezing the scan loop and the API for the whole fan-out
+    (at 100 subscribers: ~15-40s of dead engine per signal). ``send_each``
+    is one round trip per 500 tokens, and ``asyncio.to_thread`` keeps even
+    that off the loop. Stale tokens are pruned from the batch responses.
+    Best-effort: failures are logged, never raised.
     """
+    android = _messaging.AndroidConfig(
+        priority="high",
+        notification=_messaging.AndroidNotification(
+            channel_id=channel_id,
+            priority="max",
+        ),
+    )
+    sent = 0
+    stale_tokens: list[str] = []
+    for i in range(0, len(tokens), _FCM_BATCH_SIZE):
+        chunk = tokens[i : i + _FCM_BATCH_SIZE]
+        messages = [
+            _messaging.Message(
+                notification=notification,
+                data=data,
+                token=token,
+                android=android,
+            )
+            for token in chunk
+        ]
+        try:
+            batch = await asyncio.to_thread(
+                _messaging.send_each, messages, app=_fcm_app
+            )
+        except Exception:
+            logger.opt(exception=True).warning(
+                "FCM batch send failed ({} tokens)", len(chunk)
+            )
+            continue
+        for token, resp in zip(chunk, batch.responses, strict=True):
+            if resp.success:
+                sent += 1
+            elif isinstance(resp.exception, _messaging.UnregisteredError):
+                stale_tokens.append(token)
+            else:
+                logger.warning(
+                    "FCM send failed for token ...{}: {}",
+                    token[-8:],
+                    resp.exception,
+                )
+
+    for stale in stale_tokens:
+        await remove_token(stale)
+        logger.info("removed stale FCM token ...{}", stale[-8:])
+    return sent
+
+
+async def dispatch(sig: IndiaSignal) -> int:
+    """Send FCM push to all registered tokens. Returns count of messages sent."""
     if not _init_firebase():
         return 0
 
@@ -199,38 +263,9 @@ async def dispatch(sig: IndiaSignal) -> int:
         return 0
 
     notification = _messaging.Notification(**_build_notification(sig))
-    data = _build_data(sig)
-
-    sent = 0
-    stale_tokens: list[str] = []
-
-    for token in tokens:
-        msg = _messaging.Message(
-            notification=notification,
-            data=data,
-            token=token,
-            android=_messaging.AndroidConfig(
-                priority="high",
-                notification=_messaging.AndroidNotification(
-                    channel_id="signals",
-                    priority="max",
-                ),
-            ),
-        )
-        try:
-            _messaging.send(msg, app=_fcm_app)
-            sent += 1
-        except _messaging.UnregisteredError:
-            stale_tokens.append(token)
-        except Exception:
-            logger.opt(exception=True).warning(
-                "FCM send failed for token ...{}", token[-8:]
-            )
-
-    for stale in stale_tokens:
-        await remove_token(stale)
-        logger.info("removed stale FCM token ...{}", stale[-8:])
-
+    sent = await _send_batch(
+        tokens, notification, _build_data(sig), channel_id="signals"
+    )
     logger.info(
         "FCM dispatched {} {} — sent to {}/{} tokens",
         sig.base,
@@ -238,4 +273,40 @@ async def dispatch(sig: IndiaSignal) -> int:
         sent,
         len(tokens),
     )
+    return sent
+
+
+async def dispatch_owner_alert(title: str, body: str, kind: str) -> int:
+    """Engine-health alert to the owner's device(s) (src/owner_alerts.py).
+
+    Separate Android channel ("engine-alerts") so it never looks like a
+    trading signal. Phase 1 has one user; when INDIA_OWNER_UIDS is set only
+    tokens registered under those UIDs receive alerts — set it before
+    subscriber onboarding.
+    """
+    import config
+
+    if not _init_firebase():
+        return 0
+
+    from src.db import get_db
+
+    db = await get_db()
+    if config.OWNER_ALERT_UIDS:
+        placeholders = ",".join("?" for _ in config.OWNER_ALERT_UIDS)
+        cursor = await db.execute(
+            f"SELECT token FROM india_fcm_tokens WHERE uid IN ({placeholders})",
+            config.OWNER_ALERT_UIDS,
+        )
+    else:
+        cursor = await db.execute("SELECT token FROM india_fcm_tokens")
+    tokens = [str(row[0]) for row in await cursor.fetchall()]
+    if not tokens:
+        logger.warning("owner alert '{}' — no FCM tokens registered", kind)
+        return 0
+
+    notification = _messaging.Notification(title=title, body=body)
+    data = {"alert_kind": kind, "type": "engine_alert"}
+    sent = await _send_batch(tokens, notification, data, channel_id="engine-alerts")
+    logger.warning("OWNER ALERT [{}] sent to {} device(s): {}", kind, sent, title)
     return sent

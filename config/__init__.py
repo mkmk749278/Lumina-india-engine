@@ -380,6 +380,43 @@ FEED_STALL_RESTART_SEC: int = _safe_int("INDIA_FEED_STALL_RESTART_SEC", 180)
 FEED_RESTART_COOLDOWN_SEC: int = _safe_int(
     "INDIA_FEED_RESTART_COOLDOWN_SEC", 300
 )
+# Consecutive watchdog restarts that fail to revive ticks before the engine
+# exits the process entirely. `restart: always` then boots a clean process —
+# the only guaranteed cure for a wedged broker-SDK thread (its socket object
+# is a singleton; an in-process restart can inherit its corpse). 0 disables.
+FEED_SUICIDE_AFTER_RESTARTS: int = _safe_int(
+    "INDIA_FEED_SUICIDE_AFTER_RESTARTS", 3
+)
+
+# --- input staleness TTLs (Session 18) --------------------------------------
+# Same doctrine as the tick-freshness layer, applied to the remaining live
+# inputs: a value that has stopped updating must read as *unavailable*, not
+# as its last observation. Consumers already fail safe on the zero value
+# (VIX 0 blocks the event-risk trip and the low-VIX bonus; OI 0 skips the
+# OI gates/scoring; stale PCR reads neutral).
+VIX_TTL_SEC: int = _safe_int("INDIA_VIX_TTL_SEC", 600)
+OI_TTL_SEC: int = _safe_int("INDIA_OI_TTL_SEC", 600)
+PCR_TTL_SEC: int = _safe_int("INDIA_PCR_TTL_SEC", 1800)
+
+# --- owner alerts (Session 18) ----------------------------------------------
+# Engine-health FCM pushes (distinct Android channel from signals). Phase 1
+# has a single user — the owner — so alerts go to every registered token;
+# set INDIA_OWNER_UIDS (comma-separated Firebase UIDs) BEFORE subscriber
+# onboarding so operational alerts stay owner-only.
+OWNER_ALERT_UIDS: tuple[str, ...] = tuple(
+    u.strip()
+    for u in _safe_str("INDIA_OWNER_UIDS", "").split(",")
+    if u.strip()
+)
+# Minimum spacing between alerts of the same kind — a flapping feed must not
+# turn the owner's phone into a siren.
+OWNER_ALERT_COOLDOWN_SEC: int = _safe_int("INDIA_OWNER_ALERT_COOLDOWN_SEC", 1800)
+
+# --- database backup (Session 18) -------------------------------------------
+# Nightly VACUUM INTO copy at session close. The SQLite file is the 30-day
+# quality window — the Phase-2 sign-off evidence — and previously had no
+# backup at all. Retention prunes to this many newest copies.
+DB_BACKUP_KEEP: int = _safe_int("INDIA_DB_BACKUP_KEEP", 14)
 
 # Stop distance below this many ATRs is inside one bar's noise — the trade is
 # structurally a coin flip on the next wick regardless of the setup's logic.

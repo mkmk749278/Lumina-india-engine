@@ -115,6 +115,20 @@ async def _migrate(db) -> None:  # type: ignore[no-untyped-def]
                 )
 
 
+# Every hot query filters or sorts on created_at; without these, each one is
+# a full table scan that degrades linearly as history accumulates. (The date
+# predicates are range-form — `col >= day AND col < day+1` — because a
+# function-wrapped column like DATE(created_at) can never use an index.)
+_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_signals_created"
+    " ON india_signals(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_suppressions_created"
+    " ON india_suppressions(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_outcomes_created"
+    " ON india_signal_outcomes(created_at)",
+)
+
+
 async def init_tables() -> None:
     db = await get_db()
     await db.execute(_SIGNALS_DDL)
@@ -122,7 +136,17 @@ async def init_tables() -> None:
     await db.execute(_OUTCOMES_DDL)
     await db.execute(_SESSION_SUMMARY_DDL)
     await _migrate(db)
+    for ddl in _INDEX_DDL:
+        await db.execute(ddl)
     await db.commit()
+
+# Sargable "rows from today" predicate: created_at is stored as
+# 'YYYY-MM-DD HH:MM:SS' (localtime = IST via the container TZ), so plain
+# string comparison against the date bounds is correct and index-friendly.
+_TODAY = (
+    "{col} >= DATE('now', 'localtime')"
+    " AND {col} < DATE('now', 'localtime', '+1 day')"
+)
 
 
 async def insert_signal(sig: IndiaSignal) -> None:
@@ -203,8 +227,8 @@ async def get_signals(
     params: list[str | int] = []
 
     if date:
-        clauses.append("DATE(s.created_at) = ?")
-        params.append(date)
+        clauses.append("s.created_at >= ? AND s.created_at < DATE(?, '+1 day')")
+        params.extend([date, date])
     if tier:
         clauses.append("s.tier = ?")
         params.append(tier)
@@ -263,7 +287,7 @@ async def get_suppressions(limit: int = 100) -> list[dict]:
 async def get_signal_count_today() -> int:
     db = await get_db()
     cursor = await db.execute(
-        "SELECT COUNT(*) FROM india_signals WHERE DATE(created_at) = DATE('now', 'localtime')"
+        f"SELECT COUNT(*) FROM india_signals WHERE {_TODAY.format(col='created_at')}"
     )
     row = await cursor.fetchone()
     return int(row[0]) if row else 0
@@ -295,8 +319,8 @@ async def get_outcomes(date: str | None = None, limit: int = 100) -> list[dict]:
     where = ""
     params: list[str | int] = []
     if date:
-        where = "WHERE DATE(o.created_at) = ?"
-        params.append(date)
+        where = "WHERE o.created_at >= ? AND o.created_at < DATE(?, '+1 day')"
+        params.extend([date, date])
     params.append(limit)
     cursor = await db.execute(
         f"""
@@ -326,13 +350,13 @@ async def write_session_summary() -> dict:
     db = await get_db()
 
     cursor = await db.execute(
-        """
+        f"""
         SELECT COUNT(*),
                COALESCE(SUM(CASE WHEN tier = 'A+' THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN tier = 'A' THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN tier = 'B' THEN 1 ELSE 0 END), 0),
                COALESCE(AVG(confidence), 0)
-        FROM india_signals WHERE DATE(created_at) = DATE('now', 'localtime')
+        FROM india_signals WHERE {_TODAY.format(col='created_at')}
         """
     )
     sig_row = await cursor.fetchone()
@@ -346,16 +370,16 @@ async def write_session_summary() -> dict:
     )
 
     cursor = await db.execute(
-        """
+        f"""
         SELECT gate_name, COUNT(*) FROM india_suppressions
-        WHERE DATE(created_at) = DATE('now', 'localtime')
+        WHERE {_TODAY.format(col='created_at')}
         GROUP BY gate_name
         """
     )
     gates = {str(r[0]): int(r[1]) for r in await cursor.fetchall()}
 
     cursor = await db.execute(
-        """
+        f"""
         SELECT
             COALESCE(SUM(CASE WHEN outcome = 'TP1_HIT' THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(CASE WHEN outcome = 'SL_HIT' THEN 1 ELSE 0 END), 0),
@@ -364,7 +388,7 @@ async def write_session_summary() -> dict:
             COALESCE(SUM(pct), 0),
             COALESCE(AVG(pct), 0)
         FROM india_signal_outcomes
-        WHERE DATE(created_at) = DATE('now', 'localtime')
+        WHERE {_TODAY.format(col='created_at')}
         """
     )
     oc_row = await cursor.fetchone()
