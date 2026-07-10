@@ -23,11 +23,33 @@ services:
         max-size: "5m"
         max-file: "3"
 
+  # Restarts any container whose Docker healthcheck reports unhealthy.
+  # `restart: always` only acts on process *exit* — a hung-but-alive engine
+  # (stale heartbeat) was previously detected, labelled unhealthy, and then
+  # ignored forever. The autoheal sidecar closes that loop.
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: india-autoheal
+    restart: always
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=30
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 32m
+    logging:
+      driver: json-file
+      options:
+        max-size: "2m"
+        max-file: "2"
+
   engine:
     build: .
     container_name: india-engine
     env_file: .env
     restart: always
+    labels:
+      - autoheal=true
     depends_on:
       - redis
     networks:
@@ -39,6 +61,7 @@ services:
       - ./firebase-sa.json:/app/firebase-sa.json:ro
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - INDIA_LOG_DIR=/app/data/logs
     mem_limit: 1g
     cpus: "1.5"
     logging:

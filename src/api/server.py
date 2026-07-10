@@ -22,6 +22,7 @@ Endpoints:
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json as _json
 import os
 import time
@@ -229,7 +230,7 @@ def _check_admin_token(request: Request) -> None:
     """
     auth = request.headers.get("Authorization", "")
     token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
-    if not _STATIC_TOKEN or token != _STATIC_TOKEN:
+    if not _STATIC_TOKEN or not hmac.compare_digest(token, _STATIC_TOKEN):
         raise HTTPException(status_code=403, detail="Admin token required")
 
 
@@ -241,7 +242,9 @@ def _check_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Missing Bearer token")
     token = auth[len("Bearer "):]
 
-    if _STATIC_TOKEN and token == _STATIC_TOKEN:
+    # compare_digest: a plain == short-circuits on the first differing byte,
+    # leaking prefix length through response timing.
+    if _STATIC_TOKEN and hmac.compare_digest(token, _STATIC_TOKEN):
         request.state.firebase_uid = None
         return
 

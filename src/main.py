@@ -15,11 +15,13 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
 import config
+from src import owner_alerts
 from src.api.server import (
     build_app,
     serve_api,
@@ -35,6 +37,7 @@ from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
 from src.db import close_db
+from src.db_backup import backup_database
 from src.scanner import SCAN_INTERVAL_SEC, IndiaScanner
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
@@ -224,9 +227,13 @@ async def _run() -> None:
     # Feed watchdog state. market_live_since: when the session last became
     # OPEN — the stall clock cannot start before there is a market to tick.
     # last_feed_restart: cooldown anchor so a genuinely dead broker session
-    # cannot thrash the engine with restarts.
+    # cannot thrash the engine with restarts. consecutive_stall_restarts:
+    # restarts in a row that failed to revive ticks — past the configured
+    # limit the process exits and `restart: always` boots it clean (the only
+    # guaranteed cure for a wedged broker-SDK singleton).
     market_live_since: float | None = None
     last_feed_restart = float("-inf")
+    consecutive_stall_restarts = 0
 
     def _admin_state_reset() -> dict:
         """Ops Control panel hook: align in-memory state with a wiped DB —
@@ -251,6 +258,16 @@ async def _run() -> None:
                     # daily PRE_OPEN->OPEN transition and a boot straight
                     # into an open session.
                     market_live_since = time.monotonic()
+                    if not feed_active[0]:
+                        # The most likely daily failure: the Fyers token was
+                        # never tapped this morning. Page the owner instead
+                        # of scanning a dead buffer in silence.
+                        await owner_alerts.alert(
+                            "no_feed_at_open",
+                            "Lumin India: no data feed",
+                            "Market is OPEN but the engine has no data feed"
+                            " — tap the Fyers login link to connect.",
+                        )
                 # Reset only on the genuine daily-open transition. A boot
                 # straight into OPEN (mid-session restart) must NOT reset —
                 # the gate chain was just rehydrated from today's persisted
@@ -301,6 +318,9 @@ async def _run() -> None:
                         summary["total_suppressed"],
                         summary["total_points"],
                     )
+                    # Nightly backup — once per day, right after the close
+                    # bookkeeping. The DB is the 30-day quality evidence.
+                    await backup_database()
                 prev_state = state
 
             if state == SessionState.OPEN or config.INDIA_DEV_MODE:
@@ -366,13 +386,54 @@ async def _run() -> None:
                     and mono_now - last_feed_restart
                     >= config.FEED_RESTART_COOLDOWN_SEC
                 ):
+                    # A tick arriving after the previous restart means this
+                    # is a fresh incident; none means that restart failed to
+                    # revive the feed — count it toward process suicide.
+                    revived_since_last = (
+                        tick_age is not None
+                        and tick_age < mono_now - last_feed_restart
+                    )
+                    consecutive_stall_restarts = (
+                        1 if revived_since_last else consecutive_stall_restarts + 1
+                    )
                     last_feed_restart = mono_now
                     logger.error(
                         "FEED STALLED — no tick for {:.0f}s with session {}:"
-                        " restarting data feed",
+                        " restarting data feed (attempt {} in a row)",
                         stall,
                         state.value,
+                        consecutive_stall_restarts,
                     )
+                    await owner_alerts.alert(
+                        "feed_stall",
+                        "Lumin India: data feed stalled",
+                        f"No ticks for {stall:.0f}s during market hours —"
+                        f" auto-restarting the feed"
+                        f" (attempt {consecutive_stall_restarts}).",
+                    )
+                    if (
+                        config.FEED_SUICIDE_AFTER_RESTARTS > 0
+                        and consecutive_stall_restarts
+                        > config.FEED_SUICIDE_AFTER_RESTARTS
+                    ):
+                        # In-process restarts aren't reviving ticks — the
+                        # broker SDK is likely wedged beyond repair (its
+                        # socket object is a process-wide singleton). Exit;
+                        # `restart: always` boots a clean process, which
+                        # reseeds and reconnects on the freshest token.
+                        logger.critical(
+                            "{} watchdog restarts failed to revive the feed"
+                            " — exiting for a clean process restart",
+                            consecutive_stall_restarts - 1,
+                        )
+                        await owner_alerts.alert(
+                            "engine_restart",
+                            "Lumin India: engine self-restarting",
+                            "Feed restarts are not reviving ticks — the"
+                            " engine is restarting itself. If this repeats,"
+                            " re-tap the Fyers login link.",
+                        )
+                        sys.exit(1)
                     feed_active[0] = False
                     try:
                         await feed.restart()
@@ -382,6 +443,12 @@ async def _run() -> None:
                         logger.opt(exception=True).error(
                             "watchdog feed restart FAILED — feed marked down"
                             " (owner: re-tap the Fyers login link)"
+                        )
+                        await owner_alerts.alert(
+                            "feed_down",
+                            "Lumin India: data feed DOWN",
+                            "The watchdog could not restart the data feed —"
+                            " re-tap the Fyers login link.",
                         )
 
             _HEARTBEAT_PATH.write_text(str(now.timestamp()))

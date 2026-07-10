@@ -125,11 +125,18 @@ async def test_dispatch_no_tokens(monkeypatch):
 
 async def test_dispatch_sends_to_registered_tokens(monkeypatch):
     """Dispatch sends one FCM message per registered token."""
+    from types import SimpleNamespace
+
     import src.fcm_dispatcher
 
-    mock_send = MagicMock(return_value="projects/test/messages/123")
+    # Sends go through the batch API (send_each) off the event loop — the
+    # per-token synchronous send() froze the loop for the whole fan-out.
+    batch = SimpleNamespace(
+        responses=[SimpleNamespace(success=True, exception=None)]
+    )
+    mock_send_each = MagicMock(return_value=batch)
     mock_messaging = MagicMock()
-    mock_messaging.send = mock_send
+    mock_messaging.send_each = mock_send_each
     mock_messaging.Message = MagicMock()
     mock_messaging.Notification = MagicMock()
     mock_messaging.AndroidConfig = MagicMock()
@@ -145,4 +152,4 @@ async def test_dispatch_sends_to_registered_tokens(monkeypatch):
     result = await dispatch(_sig())
 
     assert result == 1
-    mock_send.assert_called_once()
+    mock_send_each.assert_called_once()

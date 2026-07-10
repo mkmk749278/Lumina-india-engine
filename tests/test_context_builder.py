@@ -38,7 +38,9 @@ def _make_stores():
     ]
     tick.seed(_SYM, candles)
 
-    oi.update_oi(_SYM, 5_000_000.0, _ist(10, 0))
+    # OI must be recent — snapshots older than INDIA_OI_TTL_SEC read as
+    # unavailable (a dead poller must not look like its last observation).
+    oi.update_oi(_SYM, 5_000_000.0, datetime.now(IST))
     oi.update_pcr(total_put_oi=900_000.0, total_call_oi=1_000_000.0)
 
     mkt.update_vix(16.5)
