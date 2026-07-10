@@ -84,13 +84,32 @@ class IndiaContextBuilder:
             else None
         )
 
-        # IB16 expiry-day behaviour: index bases key off the weekly (Tuesday)
-        # options expiry; stock F&O has no weekly cadence, so stock bases key
-        # off their monthly contract expiry day.
-        if base in config.INDEX_BASES:
+        # IB16 expiry-day behaviour. Weekly options exist only where SEBI's
+        # one-weekly-per-exchange rule left them (NSE: NIFTY, Tuesdays) — every
+        # other base, index or stock, expires with its monthly contract (last
+        # Tuesday). Keying all index bases off the weekly flag gave BANKNIFTY/
+        # FINNIFTY a false expiry-day confidence bump every Tuesday and armed
+        # the gamma-squeeze path on days with no expiring options.
+        if base in config.WEEKLY_OPTION_BASES:
             is_expiry = self._expiry.is_weekly_expiry_day(ist_now)
         else:
             is_expiry = self._expiry.is_contract_expiry_day(ist_now)
+
+        # Elapsed fraction of the forming 5m bar (1.0 once complete) — the
+        # pattern-triggered evaluators wait for a near-final bar.
+        bar_fraction = 1.0
+        if candles_5m:
+            bar_age = (ist_now - candles_5m[-1].ts).total_seconds()
+            if 0 <= bar_age < 300:
+                bar_fraction = bar_age / 300.0
+
+        # Session VWAP — the institutional intraday anchor. Fed to the scorer
+        # through key_levels_extra so proximity to VWAP counts as level
+        # confluence alongside OR/PDH/PDL/PDC/round numbers.
+        extra_levels: list[float] = []
+        session_vwap = self._session_vwap(candles_5m, ist_now)
+        if session_vwap > 0:
+            extra_levels.append(session_vwap)
 
         return IndiaContext(
             base=base,
@@ -123,4 +142,19 @@ class IndiaContextBuilder:
             is_expiry_day=is_expiry,
             max_pain_strike=self._mkt.get_max_pain(base),
             last_tick_age_sec=last_tick_age,
+            bar_elapsed_fraction=bar_fraction,
+            key_levels_extra=extra_levels,
         )
+
+    @staticmethod
+    def _session_vwap(candles_5m: list, ist_now: datetime) -> float:
+        """Volume-weighted average price over *today's* 5m bars (0.0 when
+        today has no bars or no volume yet)."""
+        num = 0.0
+        den = 0.0
+        for c in candles_5m:
+            if c.ts.date() != ist_now.date():
+                continue
+            num += (c.high + c.low + c.close) / 3.0 * c.volume
+            den += c.volume
+        return num / den if den > 0 else 0.0

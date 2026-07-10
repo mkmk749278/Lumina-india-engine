@@ -84,7 +84,7 @@ def test_trend_pullback_rejected_when_ranging() -> None:
 
 def _oi_context(**over: object):  # type: ignore[no-untyped-def]
     prev = c(high=23985.0, low=23975.0, close=23980.0)
-    pin = c(high=23984.0, low=23940.0, close=23982.0, open_=23978.0)  # bullish pin at support
+    pin = c(high=23984.0, low=23925.0, close=23982.0, open_=23978.0)  # pin, range > 0.5 ATR
     defaults = dict(
         regime_60m=Regime.RANGING,
         candles_5m=[prev, pin],

@@ -94,7 +94,12 @@ _VIX_EVENT_THRESHOLD: float = config._safe_float(
 _CIRCUIT_MOVE_PCT: float = config._safe_float(
     "INDIA_CIRCUIT_MOVE_PCT", 5.0
 )
-_COOLDOWN_SEC: int = config._safe_int("INDIA_COOLDOWN_SEC", 300)
+# Same setup+base re-emission spacing. 300s allowed near-duplicate pairs 5-9
+# minutes apart (live 2026-07-10: 12 of 88 emissions were repeats of the same
+# base+setup+direction inside 15 minutes, same entry to the decimal) — a
+# subscriber who saw the first signal gains nothing from its echo. 900s means
+# a setup must re-qualify on genuinely new structure, not the same bar cluster.
+_COOLDOWN_SEC: int = config._safe_int("INDIA_COOLDOWN_SEC", 900)
 _MIN_ATR_POINTS: float = config._safe_float("INDIA_MIN_ATR_POINTS", 3.0)
 # ATR floor for stock bases, % of price (absolute points are index-scaled —
 # 3 NIFTY points is 0.01% of the index but 2.5% of a ₹120 stock).

@@ -54,7 +54,7 @@ def test_vix_extreme_rejected_when_vix_calm() -> None:
 def test_pcr_extreme_bearish_gives_contrarian_long() -> None:
     ev = PcrExtreme()
     prev = c(high=23985.0, low=23975.0, close=23980.0)
-    pin = c(high=23984.0, low=23940.0, close=23982.0, open_=23978.0)  # bullish pin at support
+    pin = c(high=23984.0, low=23925.0, close=23982.0, open_=23978.0)  # pin, range > 0.5 ATR
     ctx = make_context(
         candles_5m=[prev, pin],
         candles_15m=C15_PCR,
@@ -75,7 +75,7 @@ def test_pcr_extreme_bearish_gives_contrarian_long() -> None:
 def test_pcr_no_extreme_no_signal() -> None:
     ev = PcrExtreme()
     prev = c(high=23985.0, low=23975.0, close=23980.0)
-    pin = c(high=23984.0, low=23940.0, close=23982.0, open_=23978.0)
+    pin = c(high=23984.0, low=23925.0, close=23982.0, open_=23978.0)
     ctx = make_context(
         candles_5m=[prev, pin],
         candles_15m=C15_PCR,

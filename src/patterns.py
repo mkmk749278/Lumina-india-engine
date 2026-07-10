@@ -61,13 +61,26 @@ def is_bearish_pin_bar(cur: Candle, wick_ratio: float = 2.0) -> bool:
     )
 
 
-def is_bullish_rejection(cur: Candle, prev: Candle | None = None) -> bool:
+def is_bullish_rejection(
+    cur: Candle, prev: Candle | None = None, min_range: float = 0.0
+) -> bool:
+    """Pin bar or engulfing, optionally requiring the bar to be big enough
+    to mean anything. ``min_range`` (price units, callers pass a fraction of
+    ATR) filters out doji-sized "rejections": a 3-point NIFTY lunch doji and
+    a 40-point capitulation bar previously qualified identically for every
+    rejection-triggered path."""
+    if min_range > 0 and (cur.high - cur.low) < min_range:
+        return False
     if is_bullish_pin_bar(cur):
         return True
     return prev is not None and is_bullish_engulfing(prev, cur)
 
 
-def is_bearish_rejection(cur: Candle, prev: Candle | None = None) -> bool:
+def is_bearish_rejection(
+    cur: Candle, prev: Candle | None = None, min_range: float = 0.0
+) -> bool:
+    if min_range > 0 and (cur.high - cur.low) < min_range:
+        return False
     if is_bearish_pin_bar(cur):
         return True
     return prev is not None and is_bearish_engulfing(prev, cur)

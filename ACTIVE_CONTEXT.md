@@ -1,6 +1,6 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-10 (Session 16 — frozen-feed incident: stale-data gate, feed watchdog, WS lifecycle fixes, honest live overlay)
+**Last updated:** 2026-07-10 (Session 17 — signal-quality pass from the first clean half-day: pattern-bar discipline, ATR trigger floor, SRF mapped targets, floor 55, cooldown 900s, NIFTY-only weekly expiry, VWAP confluence, converged 60m seed)
 
 ---
 
@@ -327,6 +327,69 @@ not the volume gates.
 
 ---
 
+## Session 17 — Signal-quality pass (2026-07-10 PM, owner-directed)
+
+Owner supplied the first **clean** (post-watchdog) outcome data — the
+2026-07-10 half-day CSV + ops Strategy/Suppressed exports — and directed:
+proceed with the signal-quality audit's improvements. The clean window
+(11:00–13:20 after the Session-16 deploy revived the feed): **88 signals in
+2h20m** (a flood; goal is 3–6/day), 62 resolved, 40.3% win, +0.42% net.
+Slices that drove every change below:
+
+- **LSR 1/9 (11% win, −1.66%)** — every loss a forming-bar "reclaim" that
+  evaporated before the 5m bar closed.
+- **SRF: 26 emissions, 26/26 with rr == exactly 1.5** — the LevelBook target
+  never once qualified (the adjacent level is nearly always a round number
+  one step away); every signal shot the synthetic fallback. 37.5% win,
+  net negative at 30% of total volume. One candidate re-fired every 30s
+  scan for 5 minutes (floor-blocked, but spamming telemetry).
+- **conf 50–54: 27.8% win, −0.99%** vs **55–59: 46.2%, +1.02%** — the emit
+  floor was admitting a cleanly-negative band (27% of volume).
+- **12 duplicate emissions** of the same base+setup+direction within 15 min
+  (cooldown was 300s).
+- **VSB 75% win +1.61%** (the day's best path), **DIV post-tightening 40%
+  win +0.45%** (probation continuing, trending right), A-tier 47.4%/+1.08%
+  vs B 37.2%/−0.66% — the score discriminates.
+
+**Changes (branch `claude/signals-frozen-zero-ed55js`, PR #52):**
+1. **Pattern-bar discipline** — `IndiaContext.bar_elapsed_fraction` (builder-
+   stamped); LSR/SRF/DIV/OIS/PCR/VIX only judge a 5m bar ≥
+   `INDIA_PATTERN_BAR_MIN_ELAPSED` (0.8) formed. Completed bars always
+   qualify. Kills forming-bar flicker triggers and the every-30s candidate
+   spam at the source.
+2. **ATR trigger floor** — `is_bullish/bearish_rejection(min_range=...)`:
+   rejection/sweep trigger bars must span ≥ `INDIA_MIN_TRIGGER_RANGE_ATR`
+   (0.5) × ATR. A lunch doji no longer counts as a rejection for the whole
+   level-rejection family. LSR's sweep bar gets the same floor.
+3. **SRF mapped destination** — target is now the nearest book level at
+   least `SRF_MIN_RR` away (skipping the useless adjacent round number);
+   no qualifying level → no signal (`SRF_REQUIRE_BOOK_TARGET`, default
+   true; false restores the legacy fallback).
+4. **Emit floor 50 → 55** — removes the measured-negative 50–54 band.
+5. **Cooldown 300s → 900s** (`INDIA_COOLDOWN_SEC`) — no same-setup echo
+   pairs 5–9 minutes apart.
+6. **Weekly expiry is NIFTY-only** (`INDIA_WEEKLY_OPTION_BASES`) — SEBI's
+   one-weekly-per-exchange rule left BANKNIFTY/FINNIFTY/NIFTYNXT50 monthly-
+   only; they no longer get the IB16 bump (or arm EGS) on ordinary Tuesdays.
+7. **VWAP wired** (audit dead-scaffold): builder computes session VWAP and
+   feeds it through `key_levels_extra` into level-confluence scoring — both
+   previously-dead wires now live.
+8. **Converged 60m seed** — dedicated ~38-trading-day 15m fetch (aggregated
+   to clock-aligned 60m; Fyers native 60m is 09:15-aligned and would
+   misalign with live bars). Regime EMA55 now runs on ~230 bars instead of
+   ~70 (it needs ~150 to converge). Fallback to 5m-window aggregation.
+
+408 tests green (17 new in test_signal_quality_s17.py), ruff + mypy clean.
+
+**Watch next sessions:** emission rate (expect ~5–15/day; if it collapses
+below ~3, the first knobs back are PATTERN_BAR_MIN_ELAPSED 0.8→0.6 and the
+floor 55→52); LSR win rate with final-bar triggers; whether SRF now emits
+at all and at what quality; VSB stays the benchmark path; DIV probation
+verdict on a full clean week; **the 30-day quality window officially starts
+2026-07-10** — everything before is feed-contaminated (Session 16).
+
+---
+
 ## Session 16 — Frozen-feed incident (2026-07-10, owner-reported)
 
 Owner screenshots at 10:29 IST: 8 signals, all emitted 09:30–09:36, every card
@@ -557,6 +620,7 @@ tight — revisit with outcome data if two same-sector signals genuinely differ.
 
 | Session | Date | Key outcomes |
 |---|---|---|
+| 17 | 2026-07-10 | **Signal-quality pass on first clean data** (see section above). Half-day flood (88 signals/2h20m) dissected: LSR 1/9 on forming-bar flicker, SRF 26/26 synthetic fallback targets, 50–54 conf band cleanly negative, 12 duplicate pairs. Shipped pattern-bar discipline, ATR trigger floor, SRF mapped-destination requirement, floor 55, cooldown 900s, NIFTY-only weekly expiry, VWAP confluence (dead scaffold wired), converged 60m seed. 408 tests green. Quality window restarts 2026-07-10. |
 | 16 | 2026-07-10 | **Frozen-feed incident** (see section above). WebSocket died silently; scanner emitted duplicate frozen-data signals, live P&L pinned +0.00%, outcomes never resolved. Added stale_data_gate, feed watchdog (auto-restart), WS lifecycle fixes (reconnect_retry=50, subscribe-when-open), fresh-only live overlay, feed health on ops Pulse. 392 tests green. |
 | 15 | 2026-07-09 | **Live-outcome-driven fixes** (see section above). First real performance data analysed (27.8% win, PF 0.73): restart bursts quadrupled the daily cap (gate-state rehydration added), ORB fired on 30s of range (09:45 lock), DIV mass-fire tightened, warm-up/flood/index-conflict/SL-noise gates added, chase guards, A tier created. 365 tests green. Owner-sign-off item (evaluator + gate changes). |
 | 14 | 2026-07-09 | **Signal-quality overhaul** (see section above). BOS/CHoCH + OB/FVG wired into scoring (were dead modules), dependency pairs (sector groups, proxy-index bias, alignment score, correlation-group + direction-conflict gates), TOD volume normalisation + building-bar pro-rating, regime EMA-separation floor, OI 4-quadrant matrix, 9-component score rebudget. 341 tests green. Owner-sign-off item (scoring model). |
