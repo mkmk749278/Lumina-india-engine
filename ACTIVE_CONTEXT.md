@@ -1,6 +1,6 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-09 (Session 15 — live-outcome-driven fixes: gate-state persistence, warm-up, OR lock, DIV tightening, flood caps, A tier)
+**Last updated:** 2026-07-10 (Session 16 — frozen-feed incident: stale-data gate, feed watchdog, WS lifecycle fixes, honest live overlay)
 
 ---
 
@@ -327,6 +327,75 @@ not the volume gates.
 
 ---
 
+## Session 16 — Frozen-feed incident (2026-07-10, owner-reported)
+
+Owner screenshots at 10:29 IST: 8 signals, all emitted 09:30–09:36, every card
+pinned at **+0.00%** for an hour, outcomes never resolving — and the signals
+were *duplicates with identical entries 5 minutes apart* (INFY 1049.7 at 09:31
+and 09:36, TCS 2045.1 ×2, AXISBANK 1301.6, NIFTY 23999.3). Identical entries
+across four instruments means the tick data itself froze: the WebSocket died
+silently (likely at/after the morning token hot-swap), the scanner ran all
+session on the static seed, the warm-up gate opened at 09:30 and emitted
+frozen-data signals, the 5-min cooldown re-emitted them once, then the
+per-direction caps went quiet. Branch `claude/signals-frozen-zero-ed55js`.
+
+**Verified SDK failure modes (fyers-apiv3 3.1.14 source, all silent):**
+1. `FyersDataSocket` is a **singleton** — the daily token hot-swap re-inits
+   the same object (every morning tap exercises this untested path; the one
+   live "ticks flowing" verification, Session 8d, was a *first* instance
+   after a container restart).
+2. Default `reconnect_retry=5` — five failed reconnects then
+   "Connection abandoned" via `print()` the engine never sees. Overnight
+   token expiry guarantees those failures.
+3. `connect()` fires `on_connect` even when token validation failed and no
+   socket exists — the engine logged "WebSocket connected — subscribing"
+   while `subscribe()` silently no-opped on `__valid_token=False`.
+4. Queue-wipe race: `connect()` waits a fixed 2s then fires `on_connect`; if
+   the socket opens later, the SDK's `__on_open` wipes its outbound queue —
+   destroying a subscription issued too early (connected, authenticated,
+   subscribed to nothing).
+
+**Fixes (defence in depth — detect at the symptom, "no ticks", not per-mode):**
+1. **Tick store tracks the newest live tick per symbol** (seed never counts);
+   context builder stamps `last_tick_age_sec` on every context.
+2. **`stale_data_gate`** (pre-score, after warm-up): suppresses any candidate
+   whose symbol never ticked or whose newest tick is older than
+   `INDIA_MAX_TICK_AGE_SEC` (120) — frozen data cannot emit unfillable
+   entries. Full suppression telemetry ("first stop when signals look
+   frozen"). Dev-mode bypass.
+3. **Feed watchdog in the main loop**: session OPEN/CLOSING + feed nominally
+   up + no tick anywhere for `INDIA_FEED_STALL_RESTART_SEC` (180, clocked
+   from session-open so a pre-open boot isn't misjudged) → full
+   `feed.restart()` (fresh WebSocket + reseed heals the candle gap),
+   `INDIA_FEED_RESTART_COOLDOWN_SEC` (300) between attempts. Restart prefers
+   the freshest `/fyers/callback` token. On restart failure the feed is
+   marked down (pulse shows it honestly).
+4. **WS lifecycle**: `reconnect_retry=50` (SDK max); subscription now waits
+   (bounded 30s) for a *genuinely open* socket before subscribing — fixes
+   both the auth-failure false "connected" log and the queue-wipe race.
+5. **Honest live overlay**: `_live_prices` omits symbols whose last tick is
+   stale — the app shows no running % rather than a frozen +0.00% (no app
+   change needed; cards already handle absent `current_price`).
+6. **Pulse**: new `last_tick_age_seconds`; ops Pulse gains a Data-feed
+   stat card (LIVE / STALLED / NO TICKS / DOWN) + tick/candle age rows —
+   this incident was previously invisible on the dashboard.
+
+392 engine tests green (17 new), ruff + mypy clean; ops 20 tests green.
+Angel feed got the same `seconds_since_last_tick()`/`restart()` interface.
+
+**Retrospective note:** the 07-08 duplicate MAC emissions and the 07-09
+restart-burst pattern (signals only at restart times) are both consistent
+with the feed dying earlier than assumed and every restart/reseed briefly
+"reviving" the data — worth re-reading the first clean sessions after this
+fix before tuning any more gates on that window's outcomes.
+
+**Watch next session:** `/api/pulse` `last_tick_age_seconds` through a full
+session; whether the watchdog ever fires (each firing is a real broker-side
+event worth logging in this file); stale_data_gate suppressions should be
+zero on a healthy day.
+
+---
+
 ## Session 15 — Live-outcome-driven signal fixes (2026-07-09, owner-directed)
 
 Owner supplied the first real performance exports (ops Strategy/Outcomes/
@@ -488,6 +557,7 @@ tight — revisit with outcome data if two same-sector signals genuinely differ.
 
 | Session | Date | Key outcomes |
 |---|---|---|
+| 16 | 2026-07-10 | **Frozen-feed incident** (see section above). WebSocket died silently; scanner emitted duplicate frozen-data signals, live P&L pinned +0.00%, outcomes never resolved. Added stale_data_gate, feed watchdog (auto-restart), WS lifecycle fixes (reconnect_retry=50, subscribe-when-open), fresh-only live overlay, feed health on ops Pulse. 392 tests green. |
 | 15 | 2026-07-09 | **Live-outcome-driven fixes** (see section above). First real performance data analysed (27.8% win, PF 0.73): restart bursts quadrupled the daily cap (gate-state rehydration added), ORB fired on 30s of range (09:45 lock), DIV mass-fire tightened, warm-up/flood/index-conflict/SL-noise gates added, chase guards, A tier created. 365 tests green. Owner-sign-off item (evaluator + gate changes). |
 | 14 | 2026-07-09 | **Signal-quality overhaul** (see section above). BOS/CHoCH + OB/FVG wired into scoring (were dead modules), dependency pairs (sector groups, proxy-index bias, alignment score, correlation-group + direction-conflict gates), TOD volume normalisation + building-bar pro-rating, regime EMA-separation floor, OI 4-quadrant matrix, 9-component score rebudget. 341 tests green. Owner-sign-off item (scoring model). |
 | 1 | 2026-07-01 | Market research complete. Full AI handover spec (27 parts). Architecture locked. CLAUDE.md + ACTIVE_CONTEXT.md. No Telegram. Standalone app. Fyers API v3. |

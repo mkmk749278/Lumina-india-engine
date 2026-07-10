@@ -74,6 +74,9 @@ def make_context(
     max_pain_strike: float | None = None,
     volume_avg_15m_20: float = 0.0,
     opening_range_locked: bool | None = None,
+    # Fresh by default so setup-logic tests aren't suppressed; the
+    # stale_data_gate tests pass None / a stale age explicitly.
+    last_tick_age_sec: float | None = 0.0,
 ) -> IndiaContext:
     # A test that supplies an opening range means it as a final level unless
     # it says otherwise (the pre-09:45 forming-range case sets this False).
@@ -112,4 +115,5 @@ def make_context(
         is_expiry_day=is_expiry_day,
         max_pain_strike=max_pain_strike,
         volume_avg_15m_20=volume_avg_15m_20,
+        last_tick_age_sec=last_tick_age_sec,
     )

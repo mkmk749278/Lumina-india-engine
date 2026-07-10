@@ -163,18 +163,30 @@ async def _run() -> None:
             candles = tick.get_candles_5m(sym)
             if candles:
                 ages.append((now_ist - candles[-1].ts).total_seconds())
+        tick_age = feed.seconds_since_last_tick()
         return {
             "feed_connected": feed_active[0],
             "feed_symbols": list(symbols.values()),
             "data_age_seconds": int(min(ages)) if ages else None,
+            "last_tick_age_seconds": int(tick_age) if tick_age is not None else None,
             "suppressed_today": len(scanner.gates.suppressions),
         }
 
     def _live_prices() -> dict[str, float]:
-        """Latest price per active symbol, for the /api/signals live overlay."""
+        """Latest *fresh* price per active symbol, for the /api/signals live
+        overlay. A symbol whose newest live tick is stale (or that never
+        ticked) is omitted — overlaying a frozen price renders a lying
+        +0.00% on every open signal card (live 2026-07-10)."""
         symbols = feed.symbols if feed_active[0] else {}
+        now_ist = datetime.now(config.IST)
         prices: dict[str, float] = {}
         for sym in symbols.values():
+            last_ts = tick.get_last_tick_ts(sym)
+            if (
+                last_ts is None
+                or (now_ist - last_ts).total_seconds() > config.MAX_TICK_AGE_SEC
+            ):
+                continue
             price = tick.get_last_price(sym)
             if price > 0:
                 prices[sym] = price
@@ -209,6 +221,13 @@ async def _run() -> None:
     # so the admin state-reset callback (below) can zero it too.
     persisted_ref = [0]
 
+    # Feed watchdog state. market_live_since: when the session last became
+    # OPEN — the stall clock cannot start before there is a market to tick.
+    # last_feed_restart: cooldown anchor so a genuinely dead broker session
+    # cannot thrash the engine with restarts.
+    market_live_since: float | None = None
+    last_feed_restart = float("-inf")
+
     def _admin_state_reset() -> dict:
         """Ops Control panel hook: align in-memory state with a wiped DB —
         drop tracked signals and reset the gate chain's day state."""
@@ -227,6 +246,11 @@ async def _run() -> None:
 
             if state != prev_state:
                 logger.info("session state -> {}", state.value)
+                if state == SessionState.OPEN:
+                    # Watchdog stall clock starts here — covers both the
+                    # daily PRE_OPEN->OPEN transition and a boot straight
+                    # into an open session.
+                    market_live_since = time.monotonic()
                 # Reset only on the genuine daily-open transition. A boot
                 # straight into OPEN (mid-session restart) must NOT reset —
                 # the gate chain was just rehydrated from today's persisted
@@ -317,6 +341,48 @@ async def _run() -> None:
                         oc.pct,
                         oc.resolved_at,
                     )
+
+            # Feed watchdog — the 2026-07-10 incident: the WebSocket died
+            # silently, the scanner ran all session on the frozen morning
+            # seed, and nothing noticed. A market that is OPEN/CLOSING with
+            # zero ticks across the whole universe for FEED_STALL_RESTART_SEC
+            # is a dead feed, whatever the SDK claims — force a full restart
+            # (fresh WebSocket + reseed heals the data hole), with a cooldown
+            # so a dead broker session cannot thrash the engine.
+            if (
+                state in (SessionState.OPEN, SessionState.CLOSING)
+                and feed_active[0]
+                and market_live_since is not None
+            ):
+                mono_now = time.monotonic()
+                tick_age = feed.seconds_since_last_tick()
+                stall = (
+                    min(tick_age, mono_now - market_live_since)
+                    if tick_age is not None
+                    else mono_now - market_live_since
+                )
+                if (
+                    stall > config.FEED_STALL_RESTART_SEC
+                    and mono_now - last_feed_restart
+                    >= config.FEED_RESTART_COOLDOWN_SEC
+                ):
+                    last_feed_restart = mono_now
+                    logger.error(
+                        "FEED STALLED — no tick for {:.0f}s with session {}:"
+                        " restarting data feed",
+                        stall,
+                        state.value,
+                    )
+                    feed_active[0] = False
+                    try:
+                        await feed.restart()
+                        feed_active[0] = True
+                        logger.warning("data feed restarted by watchdog")
+                    except Exception:
+                        logger.opt(exception=True).error(
+                            "watchdog feed restart FAILED — feed marked down"
+                            " (owner: re-tap the Fyers login link)"
+                        )
 
             _HEARTBEAT_PATH.write_text(str(now.timestamp()))
 

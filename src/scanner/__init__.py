@@ -11,15 +11,17 @@ per-base ``index_bias`` (src/dependency.py), then evaluators run per base.
 Pre-score gates (spec §9):
   1. session_gate — market hours?
   2. warmup_gate — past the 09:30 IST warm-up (opening auction noise)?
-  3. spread_gate — bid-ask too wide? (Phase 2 — always pass in Phase 1)
-  4. cooldown_gate — evaluator fired recently?
-  5. event_risk_gate — VIX > 25 or scheduled macro event day (IB13)?
-  6. circuit_check_gate — extreme intraday move?
-  7. min_atr_gate — ATR above tradeable threshold?
-  8. sl_noise_gate — stop wider than bar noise (>= 0.45x ATR)?
-  9. min_scalp_gate — TP1 distance clears the IB11 STT-viable minimum?
- 10. oi_liquidity_gate — enough open interest?
- 11. index_conflict_gate — stock signal not fighting its proxy index's
+  3. stale_data_gate — live ticks actually flowing for this symbol?
+     (a frozen buffer produces unfillable entries — live 2026-07-10)
+  4. spread_gate — bid-ask too wide? (Phase 2 — always pass in Phase 1)
+  5. cooldown_gate — evaluator fired recently?
+  6. event_risk_gate — VIX > 25 or scheduled macro event day (IB13)?
+  7. circuit_check_gate — extreme intraday move?
+  8. min_atr_gate — ATR above tradeable threshold?
+  9. sl_noise_gate — stop wider than bar noise (>= 0.45x ATR)?
+ 10. min_scalp_gate — TP1 distance clears the IB11 STT-viable minimum?
+ 11. oi_liquidity_gate — enough open interest?
+ 12. index_conflict_gate — stock signal not fighting its proxy index's
      intraday bias (dependency pairs)?
 
 Post-score:
@@ -243,6 +245,7 @@ class GateChain:
         for gate_fn in (
             self._session_gate,
             self._warmup_gate,
+            self._stale_data_gate,
             self._spread_gate,
             self._cooldown_gate,
             self._event_risk_gate,
@@ -421,6 +424,38 @@ class GateChain:
             return (
                 f"{t.strftime('%H:%M')} inside session warm-up"
                 f" (no signals before {config.WARMUP_END.strftime('%H:%M')} IST)"
+            )
+        return None
+
+    @staticmethod
+    def _stale_data_gate(
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        session_state: SessionState,
+        now: datetime,
+    ) -> str | None:
+        """No emission from a symbol whose live tick flow has stopped.
+
+        Live 2026-07-10: the WebSocket died silently, the scanner kept
+        scanning the static morning seed and emitted duplicate signals with
+        identical hour-old entries nobody could fill. A candidate is only
+        tradeable if its data is moving: no live tick ever (seed-only
+        buffer) or a newest tick older than ``MAX_TICK_AGE_SEC`` suppresses
+        with telemetry — the first stop when "signals look frozen".
+        """
+        if config.INDIA_DEV_MODE:
+            return None  # dev mode exercises the pipeline without a feed
+        age = ctx.last_tick_age_sec
+        if age is None:
+            return (
+                f"no live tick ever received for {ctx.base} — scanning"
+                " seed-only data (feed dead or never subscribed)"
+            )
+        if age > config.MAX_TICK_AGE_SEC:
+            return (
+                f"newest {ctx.base} tick is {age:.0f}s old"
+                f" (limit {config.MAX_TICK_AGE_SEC}s) — data frozen,"
+                " entry would be unfillable"
             )
         return None
 

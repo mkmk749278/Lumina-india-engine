@@ -377,6 +377,9 @@ def _make_scanner(evaluators: list[Evaluator] | None = None):
         for i in range(60)
     ]
     tick.seed(_SYM, candles)
+    # Mark the symbol's data live (stale_data_gate suppresses seed-only
+    # buffers); the timestamp covers every scan time these tests use.
+    tick._last_tick_ts[_SYM] = _ist(11, 30)
     mkt.update_vix(15.0)
 
     builder = IndiaContextBuilder(tick, oi, mkt, expiry)
@@ -437,6 +440,7 @@ def test_scanner_skips_index_only_evaluator_for_stock() -> None:
         for i in range(60)
     ]
     tick.seed(stock_sym, candles)
+    tick._last_tick_ts[stock_sym] = _ist(11, 30)  # live data for stale gate
     mkt.update_vix(15.0)
     builder = IndiaContextBuilder(tick, oi, mkt, expiry)
     builder.set_prev_day(stock_sym, high=1450.0, low=1380.0, close=1400.0)

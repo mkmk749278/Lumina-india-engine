@@ -22,6 +22,8 @@ Hard limits enforced here:
 from __future__ import annotations
 
 import asyncio
+import threading
+import time as time_mod
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
@@ -29,6 +31,7 @@ from typing import Any
 import httpx
 
 import config
+from src.broker import token_store
 from src.broker.history_utils import (
     CumulativeVolume,
     aggregate_candles,
@@ -83,6 +86,12 @@ _RING_SEED_HOURS = 6
 
 _REDACTED = "***REDACTED***"
 
+# How long _on_ws_connect waits for the socket to actually open before giving
+# up on subscribing (the SDK fires on_connect even when auth failed — see
+# _on_ws_connect).
+_SUBSCRIBE_WAIT_SEC = 30.0
+_SUBSCRIBE_POLL_SEC = 0.5
+
 
 def _auth_header(client_id: str, access_token: str) -> dict[str, str]:
     return {"Authorization": f"{client_id}:{access_token}"}
@@ -123,6 +132,11 @@ class FyersDataFeed:
         self._oi_task: asyncio.Task[None] | None = None
         self._running = False
         self._symbols: dict[str, str] = {}
+        # Monotonic clock of the last tick that reached _process_tick (any
+        # symbol, VIX included — it measures "is the socket delivering",
+        # not per-symbol liveness). Reset at start() so a fresh (re)start
+        # gets a grace window before the watchdog can judge it stalled.
+        self._last_tick_mono: float | None = None
 
     @property
     def symbols(self) -> dict[str, str]:
@@ -136,6 +150,7 @@ class FyersDataFeed:
         self._access_token = access_token
         self._loop = asyncio.get_running_loop()
         self._running = True
+        self._last_tick_mono = time_mod.monotonic()  # grace until first tick
 
         self._http = httpx.AsyncClient(
             headers=_auth_header(client_id, access_token),
@@ -168,6 +183,32 @@ class FyersDataFeed:
         if self._http:
             await self._http.aclose()
         logger.info("data feed stopped")
+
+    def seconds_since_last_tick(self) -> float | None:
+        """Seconds since any tick reached the store (None before first
+        start). The feed watchdog reads this: a running feed that has not
+        delivered a tick for FEED_STALL_RESTART_SEC during market hours is
+        dead regardless of what the SDK claims."""
+        if self._last_tick_mono is None:
+            return None
+        return max(0.0, time_mod.monotonic() - self._last_tick_mono)
+
+    async def restart(self) -> None:
+        """Full stop + start with the freshest known credentials.
+
+        Watchdog path: heals every silent WebSocket death mode (abandoned
+        SDK reconnects, auth failure on connect, lost subscription) and the
+        full reseed also repairs the candle gap the stall left behind.
+        Prefers a token delivered via /fyers/callback over the one this
+        feed was started with — the owner may have re-tapped while the
+        feed was down.
+        """
+        client_id = self._client_id
+        access_token = token_store.load_token() or self._access_token
+        if not client_id or not access_token:
+            raise RuntimeError("no Fyers credentials available for restart")
+        await self.stop()
+        await self.start(client_id, access_token)
 
     def _resolve_symbols(self, now: datetime) -> dict[str, str]:
         """Build {base: fyers_symbol} for all allowed bases."""
@@ -443,12 +484,18 @@ class FyersDataFeed:
             symbols_list.append(_VIX_SYMBOL)
         self._ws_symbols = symbols_list
 
+        # reconnect_retry: the SDK default is 5 — five failed attempts and the
+        # socket is abandoned with a print() the engine never sees (that plus
+        # the overnight token expiry is how the feed died silently on
+        # 2026-07-10). 50 is the SDK's hard ceiling; the feed watchdog is the
+        # real safety net beyond that.
         self._ws = data_ws.FyersDataSocket(
             access_token=access_token,
             log_path="",
             litemode=False,
             write_to_file=False,
             reconnect=True,
+            reconnect_retry=50,
             on_connect=self._on_ws_connect,
             on_close=self._on_ws_close,
             on_error=self._on_ws_error,
@@ -465,11 +512,45 @@ class FyersDataFeed:
         logger.info("WebSocket connecting, will subscribe to {}", symbols_list)
 
     def _on_ws_connect(self) -> None:
-        logger.info("WebSocket connected — subscribing to {}", self._ws_symbols)
-        if self._ws is not None:
-            self._ws.subscribe(
-                symbols=self._ws_symbols, data_type="SymbolUpdate"
+        """Subscribe once the socket is *actually* open.
+
+        Two verified SDK quirks make subscribing here directly unsafe:
+        ``connect()`` fires this callback even when token validation failed
+        and no socket exists (subscribe() then silently no-ops), and when the
+        socket opens later than ``connect()``'s fixed 2s wait, the SDK's
+        ``__on_open`` wipes its outbound queue — destroying a subscription
+        issued too early. So: wait (bounded) for a real open socket, then
+        subscribe. If it never opens, say so loudly — the feed watchdog will
+        restart the feed.
+        """
+        ws = self._ws
+        if ws is None:
+            return
+
+        def _subscribe_when_open() -> None:
+            deadline = time_mod.monotonic() + _SUBSCRIBE_WAIT_SEC
+            while time_mod.monotonic() < deadline:
+                if not self._running:
+                    return
+                if ws.is_connected():
+                    logger.info(
+                        "WebSocket open — subscribing to {} symbols",
+                        len(self._ws_symbols),
+                    )
+                    ws.subscribe(
+                        symbols=self._ws_symbols, data_type="SymbolUpdate"
+                    )
+                    return
+                time_mod.sleep(_SUBSCRIBE_POLL_SEC)
+            logger.error(
+                "WebSocket never opened within {}s — NOT subscribed"
+                " (token/auth failure?); feed watchdog will restart",
+                _SUBSCRIBE_WAIT_SEC,
             )
+
+        threading.Thread(
+            target=_subscribe_when_open, name="fyers-subscribe", daemon=True
+        ).start()
 
     def _on_ws_close(self) -> None:
         logger.warning("WebSocket closed")
@@ -507,6 +588,8 @@ class FyersDataFeed:
 
         if not symbol or ltp <= 0:
             return
+
+        self._last_tick_mono = time_mod.monotonic()
 
         if ts_epoch > 0:
             ts = datetime.fromtimestamp(ts_epoch, tz=config.IST)

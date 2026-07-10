@@ -74,6 +74,16 @@ class IndiaContextBuilder:
         ist_now = now.astimezone(IST) if now.tzinfo else IST.localize(now)
         scan_time = ist_now.timetz()
 
+        # Freshness of the newest live tick (None = seed-only data, no live
+        # tick ever). Drives the stale_data_gate — a signal computed on a
+        # frozen buffer has an entry nobody can fill.
+        last_tick_ts = self._tick.get_last_tick_ts(symbol)
+        last_tick_age = (
+            max(0.0, (ist_now - last_tick_ts).total_seconds())
+            if last_tick_ts is not None
+            else None
+        )
+
         # IB16 expiry-day behaviour: index bases key off the weekly (Tuesday)
         # options expiry; stock F&O has no weekly cadence, so stock bases key
         # off their monthly contract expiry day.
@@ -112,4 +122,5 @@ class IndiaContextBuilder:
             scan_time_ist=scan_time,
             is_expiry_day=is_expiry,
             max_pain_strike=self._mkt.get_max_pain(base),
+            last_tick_age_sec=last_tick_age,
         )

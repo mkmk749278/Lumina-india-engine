@@ -21,6 +21,7 @@ import asyncio
 import os
 import re
 import threading
+import time as time_mod
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from datetime import time as dt_time
@@ -95,6 +96,9 @@ class AngelDataFeed:
         self._token_to_symbol: dict[str, str] = {}
         self._nfo_tokens: list[str] = []
         self._vix_token: str = ""
+        # Monotonic clock of the last tick delivered (watchdog input; reset
+        # at start() so a fresh feed gets a grace window).
+        self._last_tick_mono: float | None = None
 
     # ── Credentials ─────────────────────────────────────────────────────
 
@@ -120,6 +124,7 @@ class AngelDataFeed:
     async def start(self) -> None:
         """Login, resolve tokens, seed history, start WebSocket + re-login task."""
         self._running = True
+        self._last_tick_mono = time_mod.monotonic()  # grace until first tick
         await asyncio.to_thread(self._login)
         await asyncio.to_thread(self._resolve_tokens)
         await asyncio.to_thread(self._seed_historical)
@@ -131,6 +136,19 @@ class AngelDataFeed:
         if self._relogin_task and not self._relogin_task.done():
             self._relogin_task.cancel()
         self._close_ws()
+
+    def seconds_since_last_tick(self) -> float | None:
+        """Seconds since any tick arrived (None before first start) — the
+        feed watchdog's stall signal."""
+        if self._last_tick_mono is None:
+            return None
+        return max(0.0, time_mod.monotonic() - self._last_tick_mono)
+
+    async def restart(self) -> None:
+        """Full stop + start (watchdog path). Angel logs in with TOTP, so a
+        restart needs no stored token — credentials come from the env."""
+        await self.stop()
+        await self.start()
         logger.info("angel data feed stopped")
 
     async def refresh_daily(self, now: datetime | None = None) -> None:
@@ -395,6 +413,8 @@ class AngelDataFeed:
         ltp = float(ltp_raw) / 100.0
         if ltp <= 0:
             return
+
+        self._last_tick_mono = time_mod.monotonic()
 
         ts_ms = tick.get("exchange_timestamp", 0) or 0
         ts = (

@@ -374,14 +374,20 @@ async def test_seed_historical_handles_api_error() -> None:
 
 def test_start_websocket_connects_then_subscribes() -> None:
     """Regression: the feed must call connect() (which opens the socket and
-    fires on_connect) and subscribe from that callback. The old code called
-    subscribe()/keep_running() but never connect(), so the socket never opened
-    and zero live ticks ever arrived."""
+    fires on_connect) and subscribe once the socket is genuinely open. The
+    original bug called subscribe()/keep_running() but never connect(), so the
+    socket never opened and zero live ticks ever arrived; the 2026-07-10
+    follow-up defers the subscription until is_connected() is true (the SDK
+    fires on_connect even on auth failure, and wipes its outbound queue when
+    the socket opens late)."""
+    import time as time_mod
+
     import fyers_apiv3.FyersWebsocket.data_ws as dw
 
     feed = _make_feed()
     feed._client_id = "APP-100"
     feed._access_token = "tok"
+    feed._running = True  # start() sets this before _start_websocket()
     feed._symbols = {_BASE: _SYM, "BANKNIFTY": "NSE:BANKNIFTY26JULFUT"}
 
     state: dict = {"connected": False, "subscribed": None}
@@ -394,6 +400,9 @@ def test_start_websocket_connects_then_subscribes() -> None:
             state["connected"] = True
             self._cb()  # SDK invokes on_connect from connect()
 
+        def is_connected(self) -> bool:
+            return state["connected"]
+
         def subscribe(self, symbols: list, data_type: str = "SymbolUpdate") -> None:
             state["subscribed"] = (symbols, data_type)
 
@@ -401,6 +410,11 @@ def test_start_websocket_connects_then_subscribes() -> None:
         feed._start_websocket()
 
     assert state["connected"] is True
+    # The subscription is issued from a background waiter thread.
+    deadline = time_mod.monotonic() + 5.0
+    while state["subscribed"] is None and time_mod.monotonic() < deadline:
+        time_mod.sleep(0.01)
+    assert state["subscribed"] is not None
     symbols, data_type = state["subscribed"]
     assert set(symbols) == {_SYM, "NSE:BANKNIFTY26JULFUT", "NSE:INDIAVIX-INDEX"}
     assert data_type == "SymbolUpdate"
