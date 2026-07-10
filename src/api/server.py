@@ -289,6 +289,7 @@ def build_app() -> FastAPI:
             "feed_connected": None,
             "feed_symbols": [],
             "data_age_seconds": None,
+            "last_tick_age_seconds": None,
             "suppressed_today": None,
         }
         if _status_provider is not None:

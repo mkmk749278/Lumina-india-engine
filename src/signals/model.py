@@ -141,6 +141,15 @@ class IndiaContext:
     # Intraday bias of this base's proxy index (src/dependency.py), stamped by
     # the scanner after all contexts are built: "LONG" | "SHORT" | "NEUTRAL".
     index_bias: str = "NEUTRAL"
+    # Age (seconds) of the newest *live tick* for this symbol at scan time.
+    # None = no live tick has ever reached the store — the candles are pure
+    # historical seed. The stale_data_gate suppresses on None or age above
+    # INDIA_MAX_TICK_AGE_SEC: a signal computed off frozen data has an entry
+    # nobody can fill (live 2026-07-10: dead WebSocket, identical duplicate
+    # signals, live P&L pinned at +0.00%). Defaults to 0.0 (fresh) so directly
+    # constructed contexts exercise the setup logic; the builder always stamps
+    # the real value.
+    last_tick_age_sec: float | None = 0.0
 
     def current_volume_ratio(self) -> float:
         """Newest-5m-bar volume ratio: TOD-normalised when available, else the

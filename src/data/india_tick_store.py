@@ -96,6 +96,12 @@ class IndiaTickStore:
         # evaluator downstream).
         self._state_date: date | None = None
 
+        # Timestamp of the newest *live* tick per symbol. Seeding does NOT set
+        # this — it distinguishes real feed data from historical backfill, so
+        # the scanner's stale_data_gate and the /api/signals live-price overlay
+        # can tell a live market from a frozen buffer.
+        self._last_tick_ts: dict[str, datetime] = {}
+
     # ------------------------------------------------------------------
     # Init
     # ------------------------------------------------------------------
@@ -199,6 +205,7 @@ class IndiaTickStore:
         The Fyers WebSocket client computes volume deltas before calling this.
         """
         self._ensure_symbol(symbol)
+        self._last_tick_ts[symbol] = ts
 
         tick_date = ts.date()
         if self._state_date is None:
@@ -315,6 +322,11 @@ class IndiaTickStore:
         tick (0.0 if the symbol has no data yet)."""
         candles = self.get_candles(symbol, "5m", include_building=True)
         return candles[-1].close if candles else 0.0
+
+    def get_last_tick_ts(self, symbol: str) -> datetime | None:
+        """Timestamp of the newest live tick for *symbol* (None if the symbol
+        has only ever been seeded — seed data never counts as live)."""
+        return self._last_tick_ts.get(symbol)
 
     def get_intraday_high(self, symbol: str) -> float:
         return self._intraday_high.get(symbol, 0.0)

@@ -346,6 +346,28 @@ WARMUP_END: time = _safe_time("INDIA_WARMUP_END", time(9, 30))
 # printed entry, and the measured outcome would be fiction (reality-first).
 MAX_CHASE_ATR: float = _safe_float("INDIA_MAX_CHASE_ATR", 0.5)
 
+# --- data freshness (Session 16) -------------------------------------------
+# Live 2026-07-10: the Fyers WebSocket died silently after the morning token
+# hot-swap. The scanner kept scanning the frozen seed, emitted duplicate
+# signals with identical hour-old entries, outcomes never resolved, and the
+# app showed +0.00% running P&L all session. Three layers of defence:
+#
+# 1. MAX_TICK_AGE_SEC — a symbol whose newest live tick is older than this
+#    (or that never received one) is suppressed by the scanner's
+#    stale_data_gate and excluded from the /api/signals live-price overlay.
+# 2. FEED_STALL_RESTART_SEC — if NO symbol has ticked for this long while the
+#    session is OPEN/CLOSING, the watchdog force-restarts the data feed
+#    (full reseed + fresh WebSocket), healing every known silent-death mode
+#    of the broker SDKs (abandoned reconnects, auth failures, lost
+#    subscriptions).
+# 3. FEED_RESTART_COOLDOWN_SEC — minimum spacing between watchdog restarts so
+#    a genuinely dead broker session cannot thrash the engine.
+MAX_TICK_AGE_SEC: int = _safe_int("INDIA_MAX_TICK_AGE_SEC", 120)
+FEED_STALL_RESTART_SEC: int = _safe_int("INDIA_FEED_STALL_RESTART_SEC", 180)
+FEED_RESTART_COOLDOWN_SEC: int = _safe_int(
+    "INDIA_FEED_RESTART_COOLDOWN_SEC", 300
+)
+
 # Stop distance below this many ATRs is inside one bar's noise — the trade is
 # structurally a coin flip on the next wick regardless of the setup's logic.
 # Live data 2026-07-08/09: the dense SL_HIT cluster sat at 0.08-0.20% stops
