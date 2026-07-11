@@ -1,6 +1,6 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-10 (Session 18 — stability-audit implementation: owner alerts, batched FCM, self-healing escalation + autoheal, DB backup/indexes, VIX/OI TTLs, single-writer ticks, concurrent reseed)
+**Last updated:** 2026-07-11 (Session 19 — post-#52 outcome analysis: chop + TP-feasibility gates, 15:00 last-signal cutoff, LSR key-level rule, pcr_at_entry wired, two-target TP2/BE plan)
 
 ---
 
@@ -324,6 +324,62 @@ green, ruff + mypy clean. Findings and fixes:
 **Watch next session:** live volume ratios will drop to honest levels — if
 emission rate falls too far, the loosened floors (Session 8b) are the knob,
 not the volume gates.
+
+---
+
+## Session 19 — Signal-quality analysis of the first post-#52 window + two-target plan (2026-07-11, owner-directed)
+
+Owner uploaded the 13:49–15:19 IST window from 2026-07-10 (the 1h30 after PR
+#52 deployed): 40 signals, 12 TP1 / 22 SL / 6 EXPIRED — **35.3% win vs the
+~39% gross breakeven, −0.20% gross, ≈ −2.6% net of the 0.06% cost model.**
+Directive: analyse and get expectancy positive; setup quality first, then
+telemetry, then TP/SL structure. One PR, three commits, in that order.
+
+**Diagnosis (each verified in both the data and the code):**
+1. **No regime gate existed** — candidates with BOTH 60m and daily regime
+   RANGING/QUIET went 0/8 resolved (−1.01% gross); the neutral HTF score
+   tiers still cleared the 55 floor.
+2. **No target-feasibility check** — every rr>2.5 signal lost (0/7);
+   tp1_pct>0.25% ran ~11% win. Far level-mapped targets emitted late expire
+   at 15:30 instead of resolving. 15:19 emissions had 11 minutes to close.
+3. **LSR 0/6 (−0.79%)** sweeping arbitrary 15m swings; its inflated A-tier
+   scores drove the tier inversion (A 26.7% win vs B 42.1%).
+4. **pcr_at_entry never wired** — a scaffold: model+DDL+INSERT existed, no
+   assignment anywhere; all 40 rows stored 0.0.
+
+**Shipped (commit order = owner's priority order):**
+1. *Setup quality:* `chop_gate` (both-TF RANGING/QUIET suppression,
+   `INDIA_CHOP_GATE_ENABLED` + exempt-setup CSV), `tp_feasibility_gate`
+   (TP1 ≤ ATR × 5m-bars-to-close × `INDIA_TP_FEASIBILITY_EFFICIENCY` 0.30,
+   dev-mode bypass), `LAST_SIGNAL_TIME` 15:20→15:00, LSR key-level
+   requirement (`INDIA_LSR_REQUIRE_KEY_LEVEL`: swept swing must sit within
+   0.25×ATR of PDH/PDL/PDC/locked-OR/VWAP; round numbers deliberately
+   excluded). Both gates registered LAST in the pre-score chain so their
+   telemetry counts only would-have-emitted candidates. Replay: cuts 14/40
+   signals, zero winners lost except one 15:19 TP1 nobody could act on.
+2. *Telemetry:* raw `ctx.pcr` from `IndiaOIStore.get_pcr()` stamped onto
+   `pcr_at_entry` at all three build sites + scanner enrichment. 0.0 =
+   unavailable (same TTL doctrine as VIX).
+3. *TP/SL structure (revises IB12, owner-directed):* two-target plan — book
+   `INDIA_TP1_EXIT_FRACTION` (50%) at TP1, runner behind a cost-covering BE
+   (`INDIA_BE_COST_BUFFER`), targeting TP2 (next structural level in the
+   1.5–3× TP1-distance band, else 2× TP1 distance;
+   `INDIA_TP2_ENABLED=false` restores single-target). Monitor walks candles
+   in order with two-leg state; new outcomes TP1_BE / TP2_HIT / TP1_EXPIRED,
+   position-weighted results; same-candle ties stay conservative and the
+   runner race starts the candle AFTER the TP1 touch. Banked TP1 survives
+   restarts via `india_signals.tp1_touched_at` (migration) + resume().
+   Session summary gains tp1_be/tp2/tp1_expired counts.
+
+**Deliberately NOT done:** no confidence-scoring rewrite (the tier inversion
+is explained by LSR + infeasible targets; recalibrating 9 components on n=40
+is overfit), no daily budget reinstated (owner decision, PR #50 stands).
+
+**Cross-repo:** ops Strategy/Outcomes views + app signal detail updated for
+the new outcomes and TP2 (same branch in both repos).
+
+**Validation:** judge the gates against the 30-day ledger — chop/feasibility
+suppressions are visible per-gate in `/api/suppressed` and `gates_fired`.
 
 ---
 
