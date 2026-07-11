@@ -41,6 +41,36 @@ def _min_trigger_range(ctx: IndiaContext) -> float:
     return ctx.atr14_5m * config.MIN_TRIGGER_RANGE_ATR
 
 
+def _near_key_level(ctx: IndiaContext, price: float) -> str | None:
+    """Name of the structural key level within LSR_KEY_LEVEL_ATR_TOL x ATR of
+    *price*, else None.
+
+    Structural levels only — PDH/PDL/PDC, the *locked* opening range (a
+    forming range is not a level, IB17), and key_levels_extra (session VWAP).
+    Deliberately NOT round numbers: a 0.25-ATR tolerance on NIFTY's 50-pt
+    round grid would qualify a large share of arbitrary swings and gut the
+    requirement.
+    """
+    tol = ctx.atr14_5m * config.LSR_KEY_LEVEL_ATR_TOL
+    if tol <= 0:
+        return None
+    candidates: list[tuple[str, float]] = [
+        ("prev_day_high", ctx.prev_day_high),
+        ("prev_day_low", ctx.prev_day_low),
+        ("prev_day_close", ctx.prev_day_close),
+    ]
+    if ctx.opening_range_locked:
+        if ctx.opening_range_high is not None:
+            candidates.append(("or_high", ctx.opening_range_high))
+        if ctx.opening_range_low is not None:
+            candidates.append(("or_low", ctx.opening_range_low))
+    candidates.extend(("vwap", lvl) for lvl in ctx.key_levels_extra)
+    for name, level in candidates:
+        if level > 0 and abs(price - level) <= tol:
+            return name
+    return None
+
+
 class LiquiditySweepReversal(Evaluator):
     """§10.1 — a 15m swing high/low is swept and reclaimed on the 5m candle.
 
@@ -76,10 +106,30 @@ class LiquiditySweepReversal(Evaluator):
         )
 
         if swing_low is not None and sweep.low < swing_low and sweep.close > swing_low:
-            return self._build(ctx, Direction.LONG, sweep, tp_level=swing_high)
+            level = self._key_level_for(ctx, swing_low)
+            if level is None:
+                return None  # swept a nobody-swing — no resting-liquidity thesis
+            return self._build(
+                ctx, Direction.LONG, sweep, tp_level=swing_high, key_level=level
+            )
         if swing_high is not None and sweep.high > swing_high and sweep.close < swing_high:
-            return self._build(ctx, Direction.SHORT, sweep, tp_level=swing_low)
+            level = self._key_level_for(ctx, swing_high)
+            if level is None:
+                return None
+            return self._build(
+                ctx, Direction.SHORT, sweep, tp_level=swing_low, key_level=level
+            )
         return None
+
+    @staticmethod
+    def _key_level_for(ctx: IndiaContext, swept: float) -> str | None:
+        """Which structural level the swept swing sits on — None rejects the
+        sweep, "" means the requirement is disabled. Live 2026-07-10: LSR went
+        0/6 sweeping arbitrary 15m swings — liquidity only rests beyond levels
+        the whole market watches."""
+        if not config.LSR_REQUIRE_KEY_LEVEL:
+            return ""
+        return _near_key_level(ctx, swept)
 
     def _build(
         self,
@@ -87,6 +137,7 @@ class LiquiditySweepReversal(Evaluator):
         direction: str,
         sweep: Candle,
         tp_level: float | None,
+        key_level: str = "",
     ) -> IndiaSignal | None:
         entry = sweep.close
         atr_pad = ctx.atr14_5m * config.LSR_SL_ATR_MULT
@@ -131,7 +182,8 @@ class LiquiditySweepReversal(Evaluator):
                 "15m swing-low sweep + reclaim"
                 if direction == Direction.LONG
                 else "15m swing-high sweep + reclaim"
-            ),
+            )
+            + (f" @ {key_level}" if key_level else ""),
         )
 
     @staticmethod

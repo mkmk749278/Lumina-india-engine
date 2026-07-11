@@ -23,22 +23,28 @@ Pre-score gates (spec §9):
  11. oi_liquidity_gate — enough open interest?
  12. index_conflict_gate — stock signal not fighting its proxy index's
      intraday bias (dependency pairs)?
+ 13. chop_gate — is there any directional regime to trade? (both the
+     60m and daily regime RANGING/QUIET is chop — live 2026-07-10 that
+     bucket went 0/8 resolved)
+ 14. tp_feasibility_gate — is TP1 reachable in the session time left
+     at the current ATR pace? (far targets emitted late expire at the
+     close instead of resolving)
 
 Post-score:
- 12. confidence_floor_gate — score >= emit floor (+5 on expiry day, IB16)?
+ 15. confidence_floor_gate — score >= emit floor (+5 on expiry day, IB16)?
 
 Emission stage (highest confidence first across the whole scan):
- 13. duplicate_direction_gate — same-direction cap per base per day
- 14. direction_conflict_gate — no opposite-direction signal on a base
+ 16. duplicate_direction_gate — same-direction cap per base per day
+ 17. direction_conflict_gate — no opposite-direction signal on a base
      minutes after one was emitted (whipsawing subscribers is worse
      than missing a genuine V-reversal)
- 15. correlation_group_gate — same-direction cap per sector group per
+ 18. correlation_group_gate — same-direction cap per sector group per
      scan: one index move validates several near-identical correlated
      setups at once; subscribers get the best one, not three copies
- 16. setup_flood_gate — same-direction cap per setup class per scan:
+ 19. setup_flood_gate — same-direction cap per setup class per scan:
      one market-wide move fires the same evaluator across many groups
- 17. scan_cap_gate — per-scan flood limiter (best few per scan)
- 18. daily_cap_gate — optional hard daily ceiling; OFF by default
+ 20. scan_cap_gate — per-scan flood limiter (best few per scan)
+ 21. daily_cap_gate — optional hard daily ceiling; OFF by default
      (INDIA_MAX_SIGNALS_PER_DAY=0 — owner decision: no fixed daily
      signal budget, volume is bounded by quality gates, not a count)
 
@@ -76,6 +82,7 @@ from src.channels import (
     VolumeSurgeBreakout,
 )
 from src.data.india_context_builder import IndiaContextBuilder
+from src.regime import Regime
 from src.session.event_calendar import EventCalendar
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
@@ -143,6 +150,34 @@ _INDEX_CONFLICT_GATE: bool = config._safe_bool("INDIA_INDEX_CONFLICT_GATE", True
 # emission is suppressed — one of the two calls is wrong, and flip-flopping a
 # subscriber inside half an hour costs trust either way.
 _CONFLICT_WINDOW_MIN: int = config._safe_int("INDIA_CONFLICT_WINDOW_MIN", 30)
+# Double-chop suppression. Regime previously only fed scoring — a candidate
+# with no directional regime on EITHER timeframe scored the neutral tiers and
+# still cleared the emit floor. Live 2026-07-10 (13:49-15:19, first post-#52
+# window): every such candidate lost — 0/8 resolved, -1.01% gross, across
+# multiple setup classes. The exempt list is the escape hatch if a specific
+# setup later proves range-profitable in the 30-day ledger (CSV of
+# SetupClass names, e.g. "LIQUIDITY_SWEEP_REVERSAL,PCR_EXTREME").
+_CHOP_GATE_ENABLED: bool = config._safe_bool("INDIA_CHOP_GATE_ENABLED", True)
+_CHOP_EXEMPT_SETUPS: frozenset[str] = frozenset(
+    s.strip().upper()
+    for s in config._safe_str("INDIA_CHOP_GATE_EXEMPT_SETUPS", "").split(",")
+    if s.strip()
+)
+_CHOP_REGIMES = (Regime.RANGING, Regime.QUIET)
+# TP1 must be reachable in the session time remaining. Live 2026-07-10: every
+# signal with rr > 2.5 lost (0/7) and tp1_pct > 0.25% ran ~11% win — targets
+# mapped to far swing/book levels late in the day expire at 15:30 instead of
+# resolving. Budget = ATR14(5m) x 5m-bars-remaining x efficiency: at midday
+# (~50 bars) it is ~15x ATR and never binds; at the 15:00 last-signal cutoff
+# (6 bars) it is ~1.8x ATR — exactly where the failures concentrated.
+# Efficiency 0.30 ≈ how much of its per-bar ATR a scalp actually converts
+# into directional progress.
+_TP_FEASIBILITY_ENABLED: bool = config._safe_bool(
+    "INDIA_TP_FEASIBILITY_ENABLED", True
+)
+_TP_FEASIBILITY_EFFICIENCY: float = config._safe_float(
+    "INDIA_TP_FEASIBILITY_EFFICIENCY", 0.30
+)
 
 
 # ── Gate result ──────────────────────────────────────────────────────
@@ -260,6 +295,13 @@ class GateChain:
             self._min_scalp_gate,
             self._oi_liquidity_gate,
             self._index_conflict_gate,
+            # Last on purpose: their suppression counts then measure only
+            # candidates every existing viability gate already passed — the
+            # exact "would have emitted" population needed to judge these
+            # gates against the next live window — and the older gates'
+            # week-over-week telemetry attribution stays comparable.
+            self._chop_gate,
+            self._tp_feasibility_gate,
         ):
             reason = gate_fn(signal, ctx, session_state, now)
             if reason is not None:
@@ -624,6 +666,68 @@ class GateChain:
     ) -> str | None:
         if ctx.current_oi > 0 and ctx.current_oi < _MIN_OI:
             return f"OI {ctx.current_oi:,.0f} < {_MIN_OI:,.0f} minimum"
+        return None
+
+    @staticmethod
+    def _chop_gate(
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        session_state: SessionState,
+        now: datetime,
+    ) -> str | None:
+        """No directional regime on either timeframe = chop. Live 2026-07-10
+        (13:49-15:19): candidates with BOTH the 60m and daily regime
+        RANGING/QUIET went 0/8 resolved, -1.01% gross, across setup classes.
+        Regime previously only fed scoring — the neutral HTF tiers still
+        cleared the emit floor. Deliberately active in INDIA_DEV_MODE (regime
+        forms from seeded history, same posture as min_atr_gate) — dev smoke
+        runs on ranging seeds will honestly show chop suppressions."""
+        if not _CHOP_GATE_ENABLED:
+            return None
+        if signal.setup_class in _CHOP_EXEMPT_SETUPS:
+            return None
+        if ctx.regime_60m in _CHOP_REGIMES and ctx.regime_daily in _CHOP_REGIMES:
+            return (
+                f"chop: 60m {ctx.regime_60m.value} + daily"
+                f" {ctx.regime_daily.value} — no directional regime to trade"
+            )
+        return None
+
+    @staticmethod
+    def _tp_feasibility_gate(
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        session_state: SessionState,
+        now: datetime,
+    ) -> str | None:
+        """TP1 must be reachable before the 15:30 close at the current ATR
+        pace. Live 2026-07-10: rr > 2.5 went 0/7 and tp1_pct > 0.25% ran ~11%
+        win — far level-mapped targets emitted late expire instead of
+        resolving. Deadline is MARKET_CLOSE, not FORCE_CLOSE_TIME: outcomes
+        resolve through the CLOSING window and EXPIRED is only scored at
+        15:30 (Phase 1 measurement; 15:25 is a Phase-2 execution concept)."""
+        if not _TP_FEASIBILITY_ENABLED:
+            return None
+        if config.INDIA_DEV_MODE:
+            return None  # off-hours dev scans have 0 bars remaining
+        t = ctx.scan_time_ist
+        if t is None or ctx.atr14_5m <= 0:
+            return None
+        close = config.MARKET_CLOSE
+        minutes_left = (
+            (close.hour * 60 + close.minute)
+            - (t.hour * 60 + t.minute + t.second / 60.0)
+        )
+        bars_remaining = max(0.0, minutes_left / 5.0)
+        budget = ctx.atr14_5m * bars_remaining * _TP_FEASIBILITY_EFFICIENCY
+        tp1_dist = abs(signal.tp1 - signal.entry)
+        if tp1_dist > budget:
+            return (
+                f"TP1 {tp1_dist:.1f} pts unreachable before"
+                f" {close.strftime('%H:%M')} — budget {budget:.1f} pts"
+                f" ({bars_remaining:.0f} 5m bars x ATR {ctx.atr14_5m:.1f}"
+                f" x {_TP_FEASIBILITY_EFFICIENCY} efficiency)"
+            )
         return None
 
     @staticmethod

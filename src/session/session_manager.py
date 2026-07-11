@@ -9,8 +9,8 @@ or (Phase 2) execution outside 09:15–15:30 IST on an NSE trading day
 State timeline on a trading day (IST):
     < 09:00              CLOSED    (pre-market, engine idle)
     09:00 – 09:15        PRE_OPEN  (bootstrap: historical data, reference levels)
-    09:15 – 15:20        OPEN      (scan + emit new signals)
-    15:20 – 15:30        CLOSING   (no new signals; force-close sweep in Phase 2)
+    09:15 – 15:00        OPEN      (scan + emit new signals)
+    15:00 – 15:30        CLOSING   (no new signals; force-close sweep in Phase 2)
     >= 15:30             CLOSED
 
 ``INDIA_DEV_MODE`` forces OPEN so the pipeline can be exercised off-hours.

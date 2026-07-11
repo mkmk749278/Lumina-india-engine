@@ -45,6 +45,13 @@ def test_session_clock_is_ordered() -> None:
     )
 
 
+def test_last_signal_time_leaves_room_to_resolve() -> None:
+    # Session 18: a scalp needs ~30 minutes to resolve before the close.
+    from datetime import time as _time
+
+    assert config.LAST_SIGNAL_TIME == _time(15, 0)
+
+
 def test_safe_bool_parses_truthy_and_falsy(monkeypatch) -> None:
     monkeypatch.setenv("X_FLAG", "yes")
     assert config._safe_bool("X_FLAG", False) is True

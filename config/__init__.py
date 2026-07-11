@@ -134,7 +134,12 @@ WEEKLY_OPTION_BASES: tuple[str, ...] = tuple(
 # --- session clock (IST) -------------------------------------------------
 PREOPEN_START: time = _safe_time("INDIA_PREOPEN_START", time(9, 0))
 MARKET_OPEN: time = _safe_time("INDIA_MARKET_OPEN", time(9, 15))
-LAST_SIGNAL_TIME: time = _safe_time("INDIA_LAST_SIGNAL_TIME", time(15, 20))
+# Last new-signal time. Was 15:20 — live 2026-07-10: signals emitted at
+# 15:01/15:19 had 11-29 minutes to the 15:30 close and either expired
+# worthless or forced a subscriber (1-3 min from FCM push to order) into a
+# no-time trade; the 14:45-15:30 bucket ran 16.7% win. 15:00 leaves a scalp
+# 30 minutes to resolve; the tp_feasibility_gate handles the remainder.
+LAST_SIGNAL_TIME: time = _safe_time("INDIA_LAST_SIGNAL_TIME", time(15, 0))
 FORCE_CLOSE_TIME: time = _safe_time("INDIA_FORCE_CLOSE_TIME", time(15, 25))
 MARKET_CLOSE: time = _safe_time("INDIA_MARKET_CLOSE", time(15, 30))
 # Expiry-day positions close 5 minutes earlier (Phase 2; OWNER_BRIEF IB16).
@@ -491,6 +496,17 @@ LSR_SL_ATR_MULT: float = _safe_float("LSR_SL_ATR_MULT", 0.5)
 LSR_MIN_SL_PCT: float = _safe_float("LSR_MIN_SL_PCT", 0.06)
 LSR_MAX_SL_PCT: float = _safe_float("LSR_MAX_SL_PCT", 1.0)
 LSR_MIN_RR: float = _safe_float("LSR_MIN_RR", 1.5)
+# The swept swing must BE a key level, not any 15m wiggle. LSR's thesis is
+# resting liquidity beyond an obvious level; a sweep of a nobody-swing carries
+# no such liquidity. Live 2026-07-10 (13:49-15:19, first post-#52 window): LSR
+# went 0/6 for -0.79% and its inflated A-tier scores drove the tier inversion
+# (A 26.7% win vs B 42.1%). The swept level must sit within
+# LSR_KEY_LEVEL_ATR_TOL x ATR of PDH/PDL/PDC, the locked opening range, or
+# session VWAP. Round numbers are deliberately excluded — a 0.25-ATR tolerance
+# on NIFTY's 50-pt round grid would qualify a large share of arbitrary swings
+# and gut the requirement.
+LSR_REQUIRE_KEY_LEVEL: bool = _safe_bool("INDIA_LSR_REQUIRE_KEY_LEVEL", True)
+LSR_KEY_LEVEL_ATR_TOL: float = _safe_float("INDIA_LSR_KEY_LEVEL_ATR_TOL", 0.25)
 
 # --- evaluator geometry: OPENING_RANGE_BREAKOUT (spec §10.2) -------------
 ORB_MIN_RANGE_PCT: float = _safe_float("ORB_MIN_RANGE_PCT", 0.10)

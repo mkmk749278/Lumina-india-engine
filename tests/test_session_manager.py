@@ -19,6 +19,10 @@ def test_state_timeline_on_trading_day(make_holidays: MakeHolidays) -> None:
     assert sm.current_state(_ist(datetime(2026, 7, 8, 8, 0))) is SessionState.CLOSED
     assert sm.current_state(_ist(datetime(2026, 7, 8, 9, 5))) is SessionState.PRE_OPEN
     assert sm.current_state(_ist(datetime(2026, 7, 8, 10, 0))) is SessionState.OPEN
+    # 15:00 last-signal cutoff (Session 18): 15:01-15:19 emissions had 11-29
+    # minutes to the close and either expired or gave a subscriber no time.
+    assert sm.current_state(_ist(datetime(2026, 7, 8, 14, 59))) is SessionState.OPEN
+    assert sm.current_state(_ist(datetime(2026, 7, 8, 15, 5))) is SessionState.CLOSING
     assert sm.current_state(_ist(datetime(2026, 7, 8, 15, 22))) is SessionState.CLOSING
     assert sm.current_state(_ist(datetime(2026, 7, 8, 15, 31))) is SessionState.CLOSED
 
