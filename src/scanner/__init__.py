@@ -916,6 +916,7 @@ class IndiaScanner:
             candidate.regime_daily = ctx.regime_daily
             candidate.atr_at_entry = ctx.atr14_5m
             candidate.vix_at_entry = ctx.india_vix
+            candidate.pcr_at_entry = ctx.pcr
             candidate.expiry_date = self._expiry.get_contract_expiry_date(now)
             candidate.days_to_expiry = self._expiry.days_to_expiry(now)
 

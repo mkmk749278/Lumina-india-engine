@@ -636,6 +636,43 @@ def test_scanner_stamps_metadata(monkeypatch) -> None:
     assert sig.expiry_date is not None
 
 
+def test_scanner_stamps_pcr_at_entry(monkeypatch) -> None:
+    # pcr_at_entry was a never-wired scaffold — all 40 live signals on
+    # 2026-07-10 stored 0.0 while vix_at_entry was populated. The emitted
+    # signal must now carry the raw market-wide PCR.
+    monkeypatch.setattr(config, "CONFIDENCE_EMIT_FLOOR", 0.0)
+    tick = IndiaTickStore()
+    oi = IndiaOIStore()
+    mkt = IndiaMarketData()
+    expiry = ExpiryManager()
+    candles = [
+        Candle(
+            ts=_ist(9, 15) + timedelta(minutes=i * 5),
+            open=24000.0 + i * 10,
+            high=24010.0 + i * 10,
+            low=23990.0 + i * 10,
+            close=24005.0 + i * 10,
+            volume=1500.0,
+        )
+        for i in range(60)
+    ]
+    tick.seed(_SYM, candles)
+    tick._last_tick_ts[_SYM] = _ist(11, 30)
+    mkt.update_vix(15.0)
+    oi.update_pcr(total_put_oi=1_200_000.0, total_call_oi=1_000_000.0)
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+    builder.set_prev_day(_SYM, high=24200.0, low=23800.0, close=24000.0)
+    builder.set_daily_regime(_SYM, Regime.TRENDING_UP)
+    scanner = IndiaScanner(
+        builder, SessionManager(), expiry, evaluators=[_AlwaysLongEvaluator()]
+    )
+
+    signals = scanner.scan({_BASE: _SYM}, _ist(11, 0))
+
+    assert len(signals) == 1
+    assert signals[0].pcr_at_entry == 1.2
+
+
 class _CaptureBiasEvaluator(Evaluator):
     """Records the index_bias each context arrives with; never fires."""
 

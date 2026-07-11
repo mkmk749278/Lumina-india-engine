@@ -174,3 +174,19 @@ def test_key_level_tolerance_boundary() -> None:
 
     assert EVAL.evaluate(ctx_with_pdl(23979.5 - 10.0)) is not None  # at tolerance
     assert EVAL.evaluate(ctx_with_pdl(23979.5 - 10.6)) is None  # beyond it
+
+
+def test_lsr_carries_pcr_at_entry() -> None:
+    sweep = c(high=23990.0, low=23950.0, close=23985.0, volume=2000.0)
+    ctx = make_context(
+        regime_60m=Regime.RANGING,
+        candles_5m=_c5(sweep),
+        candles_15m=C15,
+        atr14_5m=40.0,
+        volume_avg_5m_20=1000.0,
+        prev_day_low=23975.0,
+        pcr=1.4,
+    )
+    sig = EVAL.evaluate(ctx)
+    assert sig is not None
+    assert sig.pcr_at_entry == 1.4

@@ -131,6 +131,7 @@ class IndiaContextBuilder:
             india_vix=self._mkt.get_vix(),
             pcr_is_extreme_bearish=self._oi.is_pcr_extreme_bearish(),
             pcr_is_extreme_bullish=self._oi.is_pcr_extreme_bullish(),
+            pcr=self._oi.get_pcr(),
             opening_range_high=or_high,
             opening_range_low=or_low,
             opening_range_locked=self._tick.is_opening_range_locked(symbol),

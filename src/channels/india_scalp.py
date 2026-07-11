@@ -178,6 +178,7 @@ class LiquiditySweepReversal(Evaluator):
             regime_daily=ctx.regime_daily,
             atr_at_entry=ctx.atr14_5m,
             vix_at_entry=ctx.india_vix,
+            pcr_at_entry=ctx.pcr,
             setup_reason=(
                 "15m swing-low sweep + reclaim"
                 if direction == Direction.LONG
@@ -260,6 +261,7 @@ def _make_signal(
         regime_daily=ctx.regime_daily,
         atr_at_entry=ctx.atr14_5m,
         vix_at_entry=ctx.india_vix,
+        pcr_at_entry=ctx.pcr,
         setup_reason=reason,
     )
 
