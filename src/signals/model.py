@@ -85,8 +85,11 @@ class IndiaSignal:
     days_to_expiry: int = 0
     dispatch_timestamp: float = 0.0
 
-    # Filled after scoring / routing.
+    # Runner target (two-target plan, Session 18). 0.0 = no TP2 — the monitor
+    # runs the legacy single-target plan for this signal.
     tp2: float = 0.0
+
+    # Filled after scoring / routing.
     confidence: float = 0.0
     tier: str = Tier.FILTERED
     suppression_reason: str = ""

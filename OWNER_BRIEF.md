@@ -75,8 +75,8 @@ Minimum 30 trading days of live Phase 1 signal data must be reviewed by owner be
 **IB11 — STT-aware minimum scalp.**
 Minimum viable signal: 15 NIFTY points or 40 BANKNIFTY points. This floor covers round-trip STT + brokerage + slippage and leaves a real margin. Signals below this R:R floor are suppressed at the confidence floor gate.
 
-**IB12 — TP1-full exit model.**
-100% position closed at TP1. No partial exits. No TP2/TP3 complexity. Stop moved to break-even after +1% MFE (Maximum Favorable Excursion). Same model as the crypto engine's Session-34 default. Revisit with data if win rate warrants it.
+**IB12 — Two-target exit model (owner-directed, Session 18; supersedes the TP1-full model).**
+Book `TP1_EXIT_FRACTION` (default 50%) at TP1, move the stop on the remainder to break-even, run the rest to TP2. TP2 is the next structural level beyond TP1 (PDH/PDL/PDC, locked OR, session VWAP — when one sits 1.5–3x the TP1 distance) or 2x the TP1 distance. Break-even sits one round-trip cost beyond entry (`BE_COST_BUFFER`) so a scratched runner nets ~0 after STT, not a hidden loss. The old "+1% MFE" BE trigger was meaningless for 0.2%-target scalps — BE now arms exactly at the TP1 touch. Outcomes: SL_HIT, TP1_HIT (legacy single-target), TP1_BE, TP2_HIT, TP1_EXPIRED (runner open at close), EXPIRED; results are position-weighted across both legs. All knobs env-overridable (`INDIA_TP2_*`, `INDIA_TP1_EXIT_FRACTION`, `INDIA_BE_COST_BUFFER`); `INDIA_TP2_ENABLED=false` restores the TP1-full model.
 
 **IB13 — No signal on event risk.**
 Major macro events (RBI MPC meeting days, Union Budget, NSE circuit breaker events, India VIX > 25) trigger event_risk_gate suppression for the session. No signals emitted. Better to miss a day than blow a position on binary event risk.

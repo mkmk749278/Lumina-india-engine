@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.channels.india_scalp import LiquiditySweepReversal
+from src.channels.india_scalp import LiquiditySweepReversal, _derive_tp2
 from src.market.candle import Candle
 from src.regime import Regime
 from src.signals.model import Direction, SetupClass
@@ -190,3 +190,51 @@ def test_lsr_carries_pcr_at_entry() -> None:
     sig = EVAL.evaluate(ctx)
     assert sig is not None
     assert sig.pcr_at_entry == 1.4
+
+
+# ── TP2 derivation (owner-directed two-target plan, Session 18) ──
+
+
+def test_tp2_r_multiple_fallback_when_no_level_in_band() -> None:
+    # No structural level between 1.5x and 3x the TP1 distance -> 2x fallback.
+    ctx = make_context()  # PDH 24100 / PDL 23900 / PDC 24010
+    tp2 = _derive_tp2(ctx, entry=24000.0, tp1=24020.0, direction=Direction.LONG)
+    assert tp2 == 24040.0  # entry + 2 x 20
+
+
+def test_tp2_snaps_to_structural_level_in_band() -> None:
+    # TP1 dist 40 -> band [60, 120] beyond entry; PDH at 24100 (dist 100) wins
+    # over the 2x fallback (24080)... nearest in-band level is chosen.
+    ctx = make_context(prev_day_high=24100.0)
+    tp2 = _derive_tp2(ctx, entry=24000.0, tp1=24040.0, direction=Direction.LONG)
+    assert tp2 == 24100.0
+
+
+def test_tp2_short_direction_mirrored() -> None:
+    ctx = make_context(prev_day_low=23900.0)
+    # TP1 dist 40 -> band [60, 120] below entry; PDL 23900 (dist 100) in band.
+    tp2 = _derive_tp2(ctx, entry=24000.0, tp1=23960.0, direction=Direction.SHORT)
+    assert tp2 == 23900.0
+
+
+def test_tp2_disabled_returns_zero(monkeypatch) -> None:
+    import config
+
+    monkeypatch.setattr(config, "TP2_ENABLED", False)
+    ctx = make_context()
+    assert _derive_tp2(ctx, 24000.0, 24040.0, Direction.LONG) == 0.0
+
+
+def test_lsr_signal_carries_tp2_beyond_tp1() -> None:
+    sweep = c(high=23990.0, low=23950.0, close=23985.0, volume=2000.0)
+    ctx = make_context(
+        regime_60m=Regime.RANGING,
+        candles_5m=_c5(sweep),
+        candles_15m=C15,
+        atr14_5m=40.0,
+        volume_avg_5m_20=1000.0,
+        prev_day_low=23975.0,
+    )
+    sig = EVAL.evaluate(ctx)
+    assert sig is not None
+    assert sig.tp2 > sig.tp1 > sig.entry  # LONG: runner target beyond TP1

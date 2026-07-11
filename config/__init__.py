@@ -269,6 +269,25 @@ def round_trip_cost_points(price: float) -> float:
 # margin after costs instead of paying its whole target back in STT.
 MIN_SCALP_COST_MULT: float = _safe_float("INDIA_MIN_SCALP_COST_MULT", 1.5)
 
+# --- two-target trade plan (owner-directed, Session 18; revises IB12) ------
+# At TP1 the subscriber books TP1_EXIT_FRACTION of the position and moves the
+# stop on the remainder to break-even; the runner targets TP2. TP2 is the next
+# structural level beyond TP1 (when one sits in a sane band) or a multiple of
+# the TP1 distance. The feasibility gate applies to TP1 only — TP2 is a
+# stretch target with the runner protected at BE.
+TP2_ENABLED: bool = _safe_bool("INDIA_TP2_ENABLED", True)
+# Fallback TP2 distance as a multiple of the TP1 distance (2.0 = twice as far).
+TP2_DIST_MULT: float = _safe_float("INDIA_TP2_DIST_MULT", 2.0)
+# A mapped structural level only becomes TP2 inside this band of TP1 distances
+# (too close adds nothing over TP1; too far is a hope, not a target).
+TP2_LEVEL_MIN_MULT: float = _safe_float("INDIA_TP2_LEVEL_MIN_MULT", 1.5)
+TP2_LEVEL_MAX_MULT: float = _safe_float("INDIA_TP2_LEVEL_MAX_MULT", 3.0)
+# Fraction of the position booked at TP1 (the rest runs to TP2 behind BE).
+TP1_EXIT_FRACTION: float = _safe_float("INDIA_TP1_EXIT_FRACTION", 0.5)
+# Break-even stop offset: True places BE one round-trip cost beyond entry so a
+# "scratch" runner nets ~0 after STT instead of a hidden loss; False = entry.
+BE_COST_BUFFER: bool = _safe_bool("INDIA_BE_COST_BUFFER", True)
+
 # Minimum viable TP1 distance for stock bases, % of entry (IB11 equivalent).
 MIN_SCALP_PCT: float = _safe_float("INDIA_MIN_SCALP_PCT", 0.10)
 

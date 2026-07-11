@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS india_signals (
     tp2                REAL,
     dispatch_timestamp TEXT NOT NULL,
     suppression_reason TEXT,
+    tp1_touched_at     TEXT,
     created_at         TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
 )
 """
@@ -83,6 +84,9 @@ CREATE TABLE IF NOT EXISTS india_session_summary (
     tp1_count        INTEGER NOT NULL,
     sl_count         INTEGER NOT NULL,
     expired_count    INTEGER NOT NULL,
+    tp1_be_count     INTEGER NOT NULL DEFAULT 0,
+    tp2_count        INTEGER NOT NULL DEFAULT 0,
+    tp1_expired_count INTEGER NOT NULL DEFAULT 0,
     total_points     REAL NOT NULL,
     total_pct        REAL NOT NULL DEFAULT 0,
     avg_pct          REAL NOT NULL DEFAULT 0,
@@ -100,7 +104,14 @@ _MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("avg_pct", "REAL NOT NULL DEFAULT 0"),
         # A tier added Session 15 (IB14 — A+/A/B were the contract all along).
         ("a_count", "INTEGER NOT NULL DEFAULT 0"),
+        # Two-target trade plan (Session 18): TP1-banked outcome breakdown.
+        ("tp1_be_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("tp2_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("tp1_expired_count", "INTEGER NOT NULL DEFAULT 0"),
     ],
+    # Two-target plan: when the runner is armed (TP1 banked) — lets a banked
+    # TP1 survive an engine restart instead of silently re-racing SL vs TP1.
+    "india_signals": [("tp1_touched_at", "TEXT")],
 }
 
 
@@ -249,9 +260,11 @@ async def get_signals(
 
 
 # A signal joined to its outcome (if resolved). ``status`` is OPEN until the
-# monitor resolves the signal to TP1_HIT / SL_HIT / EXPIRED, so every card can
-# show where the trade stands. ``result_points`` / ``result_pct`` are the
-# realised, signed result once resolved (NULL while OPEN).
+# monitor resolves the signal (TP1_HIT / SL_HIT / EXPIRED, or the two-target
+# outcomes TP1_BE / TP2_HIT / TP1_EXPIRED), so every card can show where the
+# trade stands. ``result_points`` / ``result_pct`` are the realised, signed
+# result once resolved (NULL while OPEN; position-weighted for two-leg
+# outcomes).
 _SIGNAL_WITH_STATUS_SELECT = """
     s.*,
     COALESCE(o.outcome, 'OPEN') AS status,
@@ -293,6 +306,17 @@ async def get_signal_count_today() -> int:
     return int(row[0]) if row else 0
 
 
+async def mark_tp1_touched(signal_id: str, touched_at: datetime) -> None:
+    """Persist the runner arming (two-target plan) so it survives restarts."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE india_signals SET tp1_touched_at = ?"
+        " WHERE signal_id = ? AND tp1_touched_at IS NULL",
+        (str(touched_at), signal_id),
+    )
+    await db.commit()
+
+
 async def insert_outcome(
     signal_id: str,
     outcome: str,
@@ -327,7 +351,7 @@ async def get_outcomes(date: str | None = None, limit: int = 100) -> list[dict]:
         SELECT o.signal_id, o.outcome, o.exit_price, o.points, o.pct,
                o.resolved_at,
                s.symbol, s.base, s.direction, s.setup_class, s.tier,
-               s.entry, s.sl, s.tp1, s.created_at AS emitted_at
+               s.entry, s.sl, s.tp1, s.tp2, s.created_at AS emitted_at
         FROM india_signal_outcomes o
         LEFT JOIN india_signals s ON s.signal_id = o.signal_id
         {where}
@@ -386,7 +410,10 @@ async def write_session_summary() -> dict:
             COALESCE(SUM(CASE WHEN outcome = 'EXPIRED' THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(points), 0),
             COALESCE(SUM(pct), 0),
-            COALESCE(AVG(pct), 0)
+            COALESCE(AVG(pct), 0),
+            COALESCE(SUM(CASE WHEN outcome = 'TP1_BE' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN outcome = 'TP2_HIT' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN outcome = 'TP1_EXPIRED' THEN 1 ELSE 0 END), 0)
         FROM india_signal_outcomes
         WHERE {_TODAY.format(col='created_at')}
         """
@@ -406,6 +433,9 @@ async def write_session_summary() -> dict:
         "tp1_count": int(oc_row[0]),
         "sl_count": int(oc_row[1]),
         "expired_count": int(oc_row[2]),
+        "tp1_be_count": int(oc_row[6]),
+        "tp2_count": int(oc_row[7]),
+        "tp1_expired_count": int(oc_row[8]),
         # total_points kept for continuity, but % is the honest cross-instrument
         # measure — summing points across a 46-base universe is meaningless.
         "total_points": round(float(oc_row[3]), 2),
@@ -418,8 +448,9 @@ async def write_session_summary() -> dict:
         INSERT INTO india_session_summary
             (date, signal_count, a_plus_count, a_count, b_count, avg_confidence,
              total_suppressed, gates_fired, tp1_count, sl_count,
-             expired_count, total_points, total_pct, avg_pct)
-        VALUES (DATE('now', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             expired_count, tp1_be_count, tp2_count, tp1_expired_count,
+             total_points, total_pct, avg_pct)
+        VALUES (DATE('now', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(date) DO UPDATE SET
             signal_count = excluded.signal_count,
             a_plus_count = excluded.a_plus_count,
@@ -431,6 +462,9 @@ async def write_session_summary() -> dict:
             tp1_count = excluded.tp1_count,
             sl_count = excluded.sl_count,
             expired_count = excluded.expired_count,
+            tp1_be_count = excluded.tp1_be_count,
+            tp2_count = excluded.tp2_count,
+            tp1_expired_count = excluded.tp1_expired_count,
             total_points = excluded.total_points,
             total_pct = excluded.total_pct,
             avg_pct = excluded.avg_pct
@@ -446,6 +480,9 @@ async def write_session_summary() -> dict:
             summary["tp1_count"],
             summary["sl_count"],
             summary["expired_count"],
+            summary["tp1_be_count"],
+            summary["tp2_count"],
+            summary["tp1_expired_count"],
             summary["total_points"],
             summary["total_pct"],
             summary["avg_pct"],
