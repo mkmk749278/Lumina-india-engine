@@ -173,11 +173,12 @@ class IndiaTradeMonitor:
         if raw:
             try:
                 parsed = datetime.fromisoformat(raw)
-                return (
+                if parsed.tzinfo:
+                    return parsed
+                localized: datetime = fallback.tzinfo.localize(  # type: ignore[union-attr]
                     parsed
-                    if parsed.tzinfo
-                    else fallback.tzinfo.localize(parsed)  # type: ignore[union-attr]
                 )
+                return localized
             except ValueError:
                 pass
         return fallback
