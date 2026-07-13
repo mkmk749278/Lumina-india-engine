@@ -38,7 +38,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 import config
-from src import fcm_dispatcher, signal_store, strategy_edge
+from src import fcm_dispatcher, signal_store, strategy_allocator, strategy_edge
 from src.broker import token_store
 from src.utils import get_logger
 
@@ -365,6 +365,16 @@ def build_app() -> FastAPI:
         phase, VIX regime, and market-direction-vs-signal cohort. Measured
         edge for the tier recalibration and the allocator (no emission change)."""
         return await strategy_edge.get_edge_matrix(days=days)
+
+    @app.get("/api/allocator", dependencies=[Depends(_check_token)])
+    async def allocator(
+        days: int = Query(30, ge=1, le=90),
+    ) -> dict:
+        """Allocator recommendations (observe-only): per-cohort EMIT /
+        SUPPRESS / HOLD verdicts from the measured edge matrix. Changes no
+        emission — the 'what it would do' surface before the allocator is
+        ever armed to act."""
+        return await strategy_allocator.get_allocation(days=days)
 
     @app.post("/api/fcm-token")
     async def register_fcm_token(

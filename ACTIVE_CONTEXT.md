@@ -387,10 +387,24 @@ Read-only over stored rows (no new I/O); surfaced at **`/api/edge-matrix?days=N`
 the allocator, replacing trust in the inverted a-priori tier. `get_resolved_signals`
 added to `signal_store`. 5 new tests, 476 green, ruff + mypy clean.
 
-**Next (plan `claude/indian-stock-signals-quality-b3fz40`):** strategy-portfolio
-affinity tags → tier recalibration from the edge matrix (owner sign-off) →
-allocator in recommendation mode → FII/DII + Gift-Nifty feeds → ops observability
-(surface the edge matrix + context vector in the ops Strategy view).
+**Phase 7 (done — lumin-india-ops PR #7 merged):** ops **Edge** view renders the
+engine's edge matrix (win% / net% / cost-adjusted expectancy per cohort, incl.
+market-direction × signal side). `engine_api.edge_matrix()` + `/edge` route.
+
+**Phase 5 (done, this branch — ships normally, observe-only):**
+`src/strategy_allocator.py` — turns the edge matrix into per-cohort **EMIT /
+SUPPRESS / HOLD / INSUFFICIENT_DATA** verdicts (a cohort needs
+`ALLOCATOR_MIN_SAMPLE` resolved trades; judged on cost-adjusted expectancy vs
+`ALLOCATOR_EV_FLOOR` / `ALLOCATOR_SUPPRESS_EV`). **Recommendation mode only** —
+surfaced at **`/api/allocator`**, changes no emission; the "what it would do"
+the owner watches before it is ever armed. 4 new tests, 480 green, ruff + mypy
+clean.
+
+**Next (plan `claude/indian-stock-signals-quality-b3fz40`):** ops Allocator panel
+(render `/api/allocator`) → strategy-portfolio affinity tags + **tier
+recalibration from the edge matrix** (owner sign-off, once the matrix has real
+sample) → FII/DII + Gift-Nifty feeds (owner sign-off) → arm the allocator once
+its recommendations visibly track live outcomes.
 
 ---
 
