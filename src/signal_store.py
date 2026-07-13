@@ -379,6 +379,28 @@ async def get_outcomes(date: str | None = None, limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def get_resolved_signals(days: int = 30) -> list[dict]:
+    """Resolved signals (with their market-context stamp) over the last
+    ``days`` — the raw material for the Strategy×Context edge matrix. Filters
+    on the outcome's localtime ``created_at`` (indexed, IST) so the window is
+    index-friendly."""
+    db = await get_db()
+    cursor = await db.execute(
+        """
+        SELECT s.setup_class, s.direction, s.tier,
+               s.session_phase, s.market_direction, s.vix_regime,
+               s.regime_60m, s.confidence,
+               o.outcome, o.pct
+        FROM india_signal_outcomes o
+        JOIN india_signals s ON s.signal_id = o.signal_id
+        WHERE o.created_at >= DATE('now', 'localtime', ?)
+        """,
+        (f"-{max(1, days)} day",),
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
 async def write_session_summary() -> dict:
     """Aggregate today's signals/suppressions/outcomes into one row.
 
