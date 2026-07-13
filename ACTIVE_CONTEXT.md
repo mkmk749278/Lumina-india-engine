@@ -363,10 +363,23 @@ CSV) — so the by-direction / by-phase slices that had to be computed by hand o
 07-13 are now first-class. Measurement only; no scoring/gate change. 11 new
 tests (`test_market_context*.py`), 465 green, ruff + mypy clean.
 
+**Phase 4a (done, this branch — owner sign-off):** `direction_bias_gate` —
+suppresses a signal fighting a *decisive* whole-market direction
+(`ctx.market_direction`, stamped from MarketContext; NEUTRAL is inert, needs two
+aligned index votes and zero opposing). Pre-score gate, after
+`_index_conflict_gate`, before chop/tp (so those keep last-in-chain telemetry).
+Config `INDIA_DIRECTION_BIAS_GATE_ENABLED` (default true; false = exact prior
+behaviour) + `INDIA_DIRECTION_GATE_EXEMPT_SETUPS`. **07-13 replay:** on the
+LONG-biased tape it cuts the 45 SHORTs (13%, −5.6%) and keeps the 50 LONGs
+(**56%, +11.6%** vs 36%/+6.0% baseline). **Session-phase gate deliberately NOT
+shipped** — 07-13 midday breakouts were the *best* cohort (48%/+3.74%), so
+blanket midday suppression would cut winners; `session_phase` stays a measured
+dimension for the edge matrix. 471 tests green (+6), ruff + mypy clean.
+
 **Next (plan `claude/indian-stock-signals-quality-b3fz40`):** strategy-portfolio
-affinity tags → Strategy×Context edge matrix → direction + session-phase gates +
-tier recalibration (owner sign-off) → allocator in recommendation mode →
-FII/DII + Gift-Nifty feeds → ops observability.
+affinity tags → Strategy×Context edge matrix → tier recalibration (owner
+sign-off) → allocator in recommendation mode → FII/DII + Gift-Nifty feeds → ops
+observability.
 
 ---
 

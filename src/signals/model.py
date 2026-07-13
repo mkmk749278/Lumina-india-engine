@@ -156,6 +156,11 @@ class IndiaContext:
     # Intraday bias of this base's proxy index (src/dependency.py), stamped by
     # the scanner after all contexts are built: "LONG" | "SHORT" | "NEUTRAL".
     index_bias: str = "NEUTRAL"
+    # Whole-market direction (src/market_context.py), stamped by the scanner
+    # from the per-scan MarketContext: "LONG_BIASED" | "SHORT_BIASED" |
+    # "NEUTRAL". Read by the direction_bias_gate to suppress counter-trend
+    # signals when the tape is decisively one-sided. NEUTRAL = inert.
+    market_direction: str = "NEUTRAL"
     # Elapsed fraction (0..1) of the forming 5m bar at scan time. 1.0 = the
     # newest bar is complete (or effectively so). Pattern-triggered evaluators
     # (sweep/reclaim/rejection) only judge a bar that is at least

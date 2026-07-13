@@ -82,13 +82,13 @@ from src.channels import (
     VolumeSurgeBreakout,
 )
 from src.data.india_context_builder import IndiaContextBuilder
-from src.market_context import MarketContext
+from src.market_context import MarketContext, MarketDirection
 from src.regime import Regime
 from src.session.event_calendar import EventCalendar
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
 from src.signal_quality import IndiaSignalScoringEngine, tier_for
-from src.signals.model import IndiaContext, IndiaSignal
+from src.signals.model import Direction, IndiaContext, IndiaSignal
 from src.signals.model import Tier as Tier
 from src.utils import get_logger
 
@@ -165,6 +165,25 @@ _CHOP_EXEMPT_SETUPS: frozenset[str] = frozenset(
     if s.strip()
 )
 _CHOP_REGIMES = (Regime.RANGING, Regime.QUIET)
+# Market-direction gate. The scorer's index-alignment component (5 pts) never
+# stopped counter-trend signals from clearing the floor: live 2026-07-13 the
+# tape was decisively LONG-biased all day and SHORT signals went 6/45 (13%,
+# -5.6%) while LONGs went 28/50 (56%, +11.6%). This gate suppresses a signal
+# that fights a *decisive* whole-market direction (MarketContext, needs two
+# aligned index votes and zero opposing — NEUTRAL never suppresses, so a
+# genuinely two-sided tape is untouched). Distinct from _index_conflict_gate,
+# which is a *stock* vs its *proxy index*; this is *any* base (incl. the
+# indices themselves) vs the *whole market*. Exempt list is the escape hatch
+# for setups that are deliberately contrarian at an extreme (e.g. PCR_EXTREME,
+# INDIA_VIX_EXTREME) — CSV of SetupClass names.
+_DIRECTION_BIAS_GATE_ENABLED: bool = config._safe_bool(
+    "INDIA_DIRECTION_BIAS_GATE_ENABLED", True
+)
+_DIRECTION_GATE_EXEMPT_SETUPS: frozenset[str] = frozenset(
+    s.strip().upper()
+    for s in config._safe_str("INDIA_DIRECTION_GATE_EXEMPT_SETUPS", "").split(",")
+    if s.strip()
+)
 # TP1 must be reachable in the session time remaining. Live 2026-07-10: every
 # signal with rr > 2.5 lost (0/7) and tp1_pct > 0.25% ran ~11% win — targets
 # mapped to far swing/book levels late in the day expire at 15:30 instead of
@@ -296,6 +315,7 @@ class GateChain:
             self._min_scalp_gate,
             self._oi_liquidity_gate,
             self._index_conflict_gate,
+            self._direction_bias_gate,
             # Last on purpose: their suppression counts then measure only
             # candidates every existing viability gate already passed — the
             # exact "would have emitted" population needed to judge these
@@ -640,6 +660,37 @@ class GateChain:
         return None
 
     @staticmethod
+    def _direction_bias_gate(
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        session_state: SessionState,
+        now: datetime,
+    ) -> str | None:
+        """Suppress a signal fighting a *decisive* whole-market direction
+        (MarketContext.market_direction, stamped on ctx). NEUTRAL never
+        suppresses — the label needs two aligned index votes and zero opposing
+        — so only a one-sided tape haircuts counter-trend. Live 2026-07-13:
+        SHORT 6/45 (13%) vs LONG 28/50 (56%) in a LONG-biased tape."""
+        if not _DIRECTION_BIAS_GATE_ENABLED:
+            return None
+        if signal.setup_class in _DIRECTION_GATE_EXEMPT_SETUPS:
+            return None
+        md = ctx.market_direction
+        opposing = (
+            (md == MarketDirection.LONG_BIASED and signal.direction == Direction.SHORT)
+            or (
+                md == MarketDirection.SHORT_BIASED
+                and signal.direction == Direction.LONG
+            )
+        )
+        if opposing:
+            return (
+                f"{signal.direction} fights the {md} whole-market direction"
+                f" (market-direction gate)"
+            )
+        return None
+
+    @staticmethod
     def _min_scalp_gate(
         signal: IndiaSignal,
         ctx: IndiaContext,
@@ -844,6 +895,8 @@ class IndiaScanner:
         market_ctx = MarketContext.build(
             {b: c for b, c in contexts.items() if b in config.INDEX_BASES}, now
         )
+        for ctx in contexts.values():
+            ctx.market_direction = market_ctx.market_direction
 
         scored: list[tuple[IndiaSignal, IndiaContext]] = []
 
