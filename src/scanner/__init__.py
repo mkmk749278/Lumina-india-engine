@@ -844,6 +844,11 @@ class IndiaScanner:
         """Restore today's emission state after a restart (see GateChain)."""
         self._gates.rehydrate(rows, now)
 
+    def set_edge_index(self, index: dict) -> None:
+        """Install the session's measured-edge lookup into the scorer (loaded
+        once at session open — see main.py)."""
+        self._scorer.set_edge_index(index)
+
     def scan(
         self,
         symbols: dict[str, str],

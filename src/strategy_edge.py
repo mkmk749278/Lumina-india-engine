@@ -114,3 +114,24 @@ async def get_edge_matrix(days: int = 30) -> dict:
         "cost_pct": _COST_PCT,
         "matrix": build_edge_matrix(rows),
     }
+
+
+def build_edge_index(rows: list[dict]) -> dict[tuple[str, str], dict]:
+    """A (setup_class, direction) -> {n, ev_net_pct} lookup for the scorer's
+    edge-aware confidence adjustment. Keyed off the same measured cohorts as
+    the matrix's ``by_setup_direction`` dimension."""
+    index: dict[tuple[str, str], dict] = {}
+    for cell in build_edge_matrix(rows).get("by_setup_direction", []):
+        setup, _, direction = str(cell["key"]).partition("/")
+        index[(setup, direction)] = {
+            "n": cell["n"],
+            "ev_net_pct": cell["ev_net_pct"],
+        }
+    return index
+
+
+async def get_edge_index(days: int = 30) -> dict[tuple[str, str], dict]:
+    """Session-open load of the edge index (cached by the caller; not a
+    per-scan read)."""
+    rows = await signal_store.get_resolved_signals(days=days)
+    return build_edge_index(rows)

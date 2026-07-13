@@ -488,6 +488,26 @@ ALLOCATOR_MIN_SAMPLE: int = _safe_int("INDIA_ALLOCATOR_MIN_SAMPLE", 20)
 ALLOCATOR_EV_FLOOR: float = _safe_float("INDIA_ALLOCATOR_EV_FLOOR", 0.0)
 ALLOCATOR_SUPPRESS_EV: float = _safe_float("INDIA_ALLOCATOR_SUPPRESS_EV", -0.05)
 
+# --- edge-aware confidence adjustment (owner-approved scoring input) ------
+# Nudges a candidate's confidence toward its cohort's *measured* cost-adjusted
+# expectancy (src/strategy_edge.py) — but only once the cohort has
+# ALLOCATOR_MIN_SAMPLE resolved trades, so on a thin/one-day sample it does
+# nothing and cannot overfit. delta = clamp(K x ev_net_pct, -CAP, +CAP) points.
+# The edge index is loaded once at session open (no per-scan DB read).
+EDGE_ADJUST_ENABLED: bool = _safe_bool("INDIA_EDGE_ADJUST_ENABLED", True)
+EDGE_ADJUST_CAP: float = _safe_float("INDIA_EDGE_ADJUST_CAP", 8.0)
+EDGE_ADJUST_K: float = _safe_float("INDIA_EDGE_ADJUST_K", 20.0)
+
+# --- macro inputs: prev-day FII/DII + opening gap (direction votes) -------
+# FII/DII fetched once/day at session open (IB18); URL unset → NEUTRAL, never
+# fabricated. MIN_CR = combined net magnitude (₹ crore) needed to cast a vote.
+# The opening gap (day_open vs prev_day_close) is the Gift-Nifty-equivalent
+# overnight-sentiment vote and needs no external feed.
+MACRO_TTL_SEC: int = _safe_int("INDIA_MACRO_TTL_SEC", 86400)
+FII_DII_URL: str = _safe_str("INDIA_FII_DII_URL", "")
+FII_DII_MIN_CR: float = _safe_float("INDIA_FII_DII_MIN_CR", 500.0)
+OPEN_GAP_MIN_PCT: float = _safe_float("INDIA_OPEN_GAP_MIN_PCT", 0.3)
+
 # --- confidence tiers ----------------------------------------------------
 # Emit floor and A+ cutoff on the 0-100 confidence score (spec §11/§13.1).
 # Below the floor a candidate is FILTERED (no FCM, no DB write).

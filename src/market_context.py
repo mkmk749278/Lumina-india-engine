@@ -105,6 +105,32 @@ def _daily_regime_vote(regime: Regime) -> str:
     return dependency.NEUTRAL
 
 
+def _fii_dii_vote(net_cr: float) -> str:
+    """Prev-day combined FII+DII net cash → directional vote. 0.0 (unavailable)
+    or sub-threshold flow → NEUTRAL (never a fabricated bias)."""
+    if net_cr >= config.FII_DII_MIN_CR:
+        return Direction.LONG
+    if net_cr <= -config.FII_DII_MIN_CR:
+        return Direction.SHORT
+    return dependency.NEUTRAL
+
+
+def _open_gap_pct(ctx: IndiaContext) -> float:
+    """Today's opening gap (%) vs prev close — the realised overnight-sentiment
+    signal that stands in for Gift-Nifty (unavailable via the Fyers feed)."""
+    if ctx.prev_day_close > 0 and ctx.day_open > 0:
+        return (ctx.day_open - ctx.prev_day_close) / ctx.prev_day_close * 100.0
+    return 0.0
+
+
+def _open_gap_vote(gap_pct: float) -> str:
+    if gap_pct >= config.OPEN_GAP_MIN_PCT:
+        return Direction.LONG
+    if gap_pct <= -config.OPEN_GAP_MIN_PCT:
+        return Direction.SHORT
+    return dependency.NEUTRAL
+
+
 def classify_market_direction(index_contexts: dict[str, IndiaContext]) -> str:
     """Composite market direction from the index contexts.
 
@@ -119,9 +145,14 @@ def classify_market_direction(index_contexts: dict[str, IndiaContext]) -> str:
         ctx = index_contexts.get(name)
         if ctx is not None:
             votes.append(dependency.market_bias(ctx))
-    nifty = index_contexts.get("NIFTY")
-    if nifty is not None:
-        votes.append(_daily_regime_vote(nifty.regime_daily))
+    primary = index_contexts.get("NIFTY") or next(
+        iter(index_contexts.values()), None
+    )
+    if primary is not None:
+        votes.append(_daily_regime_vote(primary.regime_daily))
+        # Macro votes (market-wide): prev-day FII/DII flow + the opening gap.
+        votes.append(_fii_dii_vote(primary.fii_dii_net_cr))
+        votes.append(_open_gap_vote(_open_gap_pct(primary)))
 
     longs = votes.count(Direction.LONG)
     shorts = votes.count(Direction.SHORT)
@@ -158,6 +189,8 @@ class MarketContext:
     market_direction: str
     leader: str
     is_expiry_day: bool
+    fii_dii_net_cr: float
+    open_gap_pct: float
 
     @classmethod
     def build(
@@ -176,6 +209,8 @@ class MarketContext:
         vix = primary.india_vix if primary is not None else 0.0
         pcr = primary.pcr if primary is not None else 0.0
         is_expiry = primary.is_expiry_day if primary is not None else False
+        fii_dii = primary.fii_dii_net_cr if primary is not None else 0.0
+        gap = _open_gap_pct(primary) if primary is not None else 0.0
         return cls(
             session_phase=classify_session_phase(ist.timetz()),
             vix=vix,
@@ -184,4 +219,6 @@ class MarketContext:
             market_direction=classify_market_direction(index_contexts),
             leader=_leadership(index_contexts),
             is_expiry_day=is_expiry,
+            fii_dii_net_cr=fii_dii,
+            open_gap_pct=round(gap, 3),
         )

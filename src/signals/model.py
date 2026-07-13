@@ -161,6 +161,10 @@ class IndiaContext:
     # "NEUTRAL". Read by the direction_bias_gate to suppress counter-trend
     # signals when the tape is decisively one-sided. NEUTRAL = inert.
     market_direction: str = "NEUTRAL"
+    # Prev-day combined FII+DII net cash (₹ crore) from IndiaMacroStore, stamped
+    # by the context builder. 0.0 = unavailable (source unset/stale) → NEUTRAL
+    # macro vote in the market-direction classifier. Never fabricated.
+    fii_dii_net_cr: float = 0.0
     # Elapsed fraction (0..1) of the forming 5m bar at scan time. 1.0 = the
     # newest bar is complete (or effectively so). Pattern-triggered evaluators
     # (sweep/reclaim/rejection) only judge a bar that is at least

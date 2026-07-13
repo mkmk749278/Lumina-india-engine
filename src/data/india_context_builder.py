@@ -10,6 +10,7 @@ from datetime import datetime
 
 import config
 from config import INSTRUMENTS, IST
+from src.data.india_macro_store import IndiaMacroStore
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
@@ -31,11 +32,13 @@ class IndiaContextBuilder:
         prev_day_high: dict[str, float] | None = None,
         prev_day_low: dict[str, float] | None = None,
         prev_day_close: dict[str, float] | None = None,
+        macro_store: IndiaMacroStore | None = None,
     ) -> None:
         self._tick = tick_store
         self._oi = oi_store
         self._mkt = market_data
         self._expiry = expiry_mgr
+        self._macro = macro_store
         self._prev_high = prev_day_high or {}
         self._prev_low = prev_day_low or {}
         self._prev_close = prev_day_close or {}
@@ -145,6 +148,7 @@ class IndiaContextBuilder:
             last_tick_age_sec=last_tick_age,
             bar_elapsed_fraction=bar_fraction,
             key_levels_extra=extra_levels,
+            fii_dii_net_cr=self._macro.get_net_cr() if self._macro else 0.0,
         )
 
     @staticmethod
