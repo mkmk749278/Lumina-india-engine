@@ -1,6 +1,6 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-11 (Session 19 — post-#52 outcome analysis: chop + TP-feasibility gates, 15:00 last-signal cutoff, LSR key-level rule, pcr_at_entry wired, two-target TP2/BE plan)
+**Last updated:** 2026-07-13 (Session 20 — India Market Doctrine + Phase-1 market-context backbone: per-scan MarketContext stamped on every signal; the autonomous regime-adaptive portfolio program begins)
 
 ---
 
@@ -324,6 +324,49 @@ green, ruff + mypy clean. Findings and fixes:
 **Watch next session:** live volume ratios will drop to honest levels — if
 emission rate falls too far, the loosened floors (Session 8b) are the knob,
 not the volume gates.
+
+---
+
+## Session 20 — India Market Doctrine + autonomous regime-adaptive portfolio (2026-07-13, owner-directed)
+
+Owner uploaded the full 2026-07-13 live window (119 signals across 45 bases, 95
+resolved) and directed: research the Indian market properly, then mirror the
+crypto engine's autonomous regime-adaptive strategy portfolio to lift signal
+quality. The 07-13 data re-proved PR #54's diagnosis on a fresh day and added
+two findings #54 hadn't isolated:
+
+- **Overall 36% win (34/95)** — below the ~39% cost breakeven; net ≈ flat/neg.
+- **LONG 56% (+11.6%) vs SHORT 13% (−5.6%)** — the biggest bleed. No
+  market-direction filter; shorts fired all day into a rising tape.
+- **Tier inverted: A+ 0/3, A 27%, B 44%** — the a-priori score is not
+  predictive; measured edge (not assumed score) must drive selection.
+- **PCR 0.0 on all rows** (fixed by #54, now merged), midday-chop dead zone
+  (11:00 hour 25%/−2.2%), sub-noise stops in the VIX-13 quiet tape.
+
+**Phase 0 (done):** unblocked and merged **PR #54** — its lone CI failure was a
+mypy `no-any-return` in `trade_monitor._parse_ts`; fixed by binding the pytz
+`.localize()` result to a `datetime` local. #54's chop + TP-feasibility gates,
+LSR key-level rule, PCR wiring and two-target TP2/BE plan are now on `main`.
+
+**Deliverable 1 (done):** `INDIA_MARKET_DOCTRINE.md` — NSE F&O market-structure
+doctrine (analog to the crypto doctrine): session clock as our Wyckoff, market
+direction (FII/DII + Gift Nifty + NIFTY/BANKNIFTY leadership) as our
+dominance/rotation, VIX/PCR/max-pain/expiry as positioning, STT as the fee tax,
+"stand down" as a product feature.
+
+**Phase 1 (done, this branch):** `src/market_context.py` — a per-scan
+`MarketContext` (session_phase, vix_regime, market_direction, pcr, leader,
+expiry) folded once from the index contexts and stamped onto every emitted
+signal. New `india_signals` columns `market_direction / session_phase /
+vix_regime` (migration-added, flow through `s.*` into `/api/signals` + ops +
+CSV) — so the by-direction / by-phase slices that had to be computed by hand on
+07-13 are now first-class. Measurement only; no scoring/gate change. 11 new
+tests (`test_market_context*.py`), 465 green, ruff + mypy clean.
+
+**Next (plan `claude/indian-stock-signals-quality-b3fz40`):** strategy-portfolio
+affinity tags → Strategy×Context edge matrix → direction + session-phase gates +
+tier recalibration (owner sign-off) → allocator in recommendation mode →
+FII/DII + Gift-Nifty feeds → ops observability.
 
 ---
 

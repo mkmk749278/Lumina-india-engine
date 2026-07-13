@@ -145,6 +145,18 @@ MARKET_CLOSE: time = _safe_time("INDIA_MARKET_CLOSE", time(15, 30))
 # Expiry-day positions close 5 minutes earlier (Phase 2; OWNER_BRIEF IB16).
 EXPIRY_FORCE_CLOSE_TIME: time = _safe_time("INDIA_EXPIRY_FORCE_CLOSE", time(15, 20))
 
+# --- intraday session-phase boundaries (INDIA_MARKET_DOCTRINE §3) ---------
+# The tape's character changes through the day: the power-hour drive
+# (breakouts/momentum pay), the midday chop where breakouts fail, and the
+# closing repositioning window. MarketContext labels each signal's phase for
+# the edge matrix (and, later, phase-aware selectivity). Env-overridable.
+POWER_HOUR_END: time = _safe_time("INDIA_POWER_HOUR_END", time(10, 30))
+MIDDAY_END: time = _safe_time("INDIA_MIDDAY_END", time(13, 30))
+# India VIX regime floor: below this is low-volatility complacency (small
+# ranges, breakouts fail for lack of follow-through). ELEVATED/EXTREME reuse
+# VIX_EXTREME_HIGH (20) and the VIX event threshold (25).
+VIX_LOW_THRESHOLD: float = _safe_float("INDIA_VIX_LOW_THRESHOLD", 14.0)
+
 # --- expiry --------------------------------------------------------------
 # NSE expiry weekday (Mon=0 .. Sun=6). Since the SEBI-driven 1-Sep-2025 revision
 # every NSE equity-derivative contract expires on a TUESDAY: weekly options each

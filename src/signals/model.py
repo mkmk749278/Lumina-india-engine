@@ -81,6 +81,13 @@ class IndiaSignal:
     atr_at_entry: float = 0.0
     vix_at_entry: float = 0.0
     pcr_at_entry: float = 0.0
+    # Market-wide context at emit (src/market_context.py), stamped so the
+    # 30-day ledger / edge matrix can slice outcomes by the tape's regime —
+    # the slices that on 2026-07-13 revealed SHORT 13% vs LONG 56% in a
+    # long-biased tape and the midday-chop dead zone. "" = pre-context signal.
+    market_direction: str = ""
+    session_phase: str = ""
+    vix_regime: str = ""
     expiry_date: date | None = None
     days_to_expiry: int = 0
     dispatch_timestamp: float = 0.0

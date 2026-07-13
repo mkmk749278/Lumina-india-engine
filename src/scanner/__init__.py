@@ -82,6 +82,7 @@ from src.channels import (
     VolumeSurgeBreakout,
 )
 from src.data.india_context_builder import IndiaContextBuilder
+from src.market_context import MarketContext
 from src.regime import Regime
 from src.session.event_calendar import EventCalendar
 from src.session.expiry_manager import ExpiryManager
@@ -837,6 +838,13 @@ class IndiaScanner:
                     ctx.index_bias = bias
                     break
 
+        # The market-wide read for this scan (session phase, VIX regime, PCR,
+        # market direction) — folded once from the index contexts and stamped
+        # onto every signal below so outcomes can be sliced by tape regime.
+        market_ctx = MarketContext.build(
+            {b: c for b, c in contexts.items() if b in config.INDEX_BASES}, now
+        )
+
         scored: list[tuple[IndiaSignal, IndiaContext]] = []
 
         # Pass 2 — evaluate, gate, and score every base.
@@ -917,6 +925,9 @@ class IndiaScanner:
             candidate.atr_at_entry = ctx.atr14_5m
             candidate.vix_at_entry = ctx.india_vix
             candidate.pcr_at_entry = ctx.pcr
+            candidate.market_direction = market_ctx.market_direction
+            candidate.session_phase = market_ctx.session_phase
+            candidate.vix_regime = market_ctx.vix_regime
             candidate.expiry_date = self._expiry.get_contract_expiry_date(now)
             candidate.days_to_expiry = self._expiry.days_to_expiry(now)
 

@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS india_signals (
     atr_at_entry       REAL,
     vix_at_entry       REAL,
     pcr_at_entry       REAL,
+    market_direction   TEXT,
+    session_phase      TEXT,
+    vix_regime         TEXT,
     expiry_date        TEXT,
     days_to_expiry     INTEGER,
     tp2                REAL,
@@ -111,7 +114,13 @@ _MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     ],
     # Two-target plan: when the runner is armed (TP1 banked) — lets a banked
     # TP1 survive an engine restart instead of silently re-racing SL vs TP1.
-    "india_signals": [("tp1_touched_at", "TEXT")],
+    # Market-context stamp (Phase 1): tape regime at emit, for the edge matrix.
+    "india_signals": [
+        ("tp1_touched_at", "TEXT"),
+        ("market_direction", "TEXT"),
+        ("session_phase", "TEXT"),
+        ("vix_regime", "TEXT"),
+    ],
 }
 
 
@@ -170,9 +179,13 @@ async def insert_signal(sig: IndiaSignal) -> None:
             confidence, tier, regime_60m, regime_daily,
             htf_trend_aligned, breakout_volume_ratio, setup_reason,
             atr_at_entry, vix_at_entry, pcr_at_entry,
+            market_direction, session_phase, vix_regime,
             expiry_date, days_to_expiry, tp2,
             dispatch_timestamp, suppression_reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
         """,
         (
             sig.signal_id,
@@ -197,6 +210,9 @@ async def insert_signal(sig: IndiaSignal) -> None:
             sig.atr_at_entry,
             sig.vix_at_entry,
             sig.pcr_at_entry,
+            sig.market_direction,
+            sig.session_phase,
+            sig.vix_regime,
             str(sig.expiry_date) if sig.expiry_date else None,
             sig.days_to_expiry,
             sig.tp2,
