@@ -400,11 +400,32 @@ surfaced at **`/api/allocator`**, changes no emission; the "what it would do"
 the owner watches before it is ever armed. 4 new tests, 480 green, ruff + mypy
 clean.
 
-**Next (plan `claude/indian-stock-signals-quality-b3fz40`):** ops Allocator panel
-(render `/api/allocator`) → strategy-portfolio affinity tags + **tier
-recalibration from the edge matrix** (owner sign-off, once the matrix has real
-sample) → FII/DII + Gift-Nifty feeds (owner sign-off) → arm the allocator once
-its recommendations visibly track live outcomes.
+**Item 2 (done, this branch — owner-approved scoring input):** edge-aware
+confidence adjustment. `IndiaSignalScoringEngine._score_measured_edge` nudges a
+candidate toward its `(setup, direction)` cohort's **measured** cost-adjusted
+expectancy (`strategy_edge.build_edge_index`), **only when the cohort has ≥
+`ALLOCATOR_MIN_SAMPLE` resolved trades**, capped ±`EDGE_ADJUST_CAP` (8). The
+honest, non-overfit "tier recalibration": on 07-13 exactly one cohort (VSB/LONG,
+n=26, the best) crosses the floor and gets a small +nudge; everything else inert;
+it strengthens as the 30-day window fills. Edge index loaded once at session open
+(`scanner.set_edge_index`, main loop — no per-scan DB read).
+`INDIA_EDGE_ADJUST_ENABLED=false` = exact prior scoring.
+
+**Item 3 (done, this branch — owner-approved macro data):** prev-day **FII/DII**
+via `src/data/india_macro_store.py` (once-daily fetch at session open, IB18;
+`INDIA_FII_DII_URL` unset/unreachable → NEUTRAL, never fabricated; tolerant JSON
+parser). Plus the **opening gap** (`day_open` vs `prev_day_close`) as the
+Gift-Nifty-equivalent overnight vote — **no Gift-Nifty feed** (Fyers carries no
+GIFT/SGX symbol; the realised gap is the equivalent signal for a post-09:30
+engine). Both fold into `classify_market_direction` as extra votes; a decisive
+FII-buy + gap-up strengthens the LONG_BIASED label the `direction_bias_gate` acts
+on. `fii_dii_net_cr` stamped on context; `fii_dii_net_cr`/`open_gap_pct` on
+MarketContext. 495 tests green (+15), ruff + mypy clean.
+
+**Next (plan `claude/indian-stock-signals-quality-b3fz40`):** let the 30-day
+window fill → watch Edge/Allocator on real data → **arm the allocator** to act
+once its recommendations visibly track live outcomes (owner sign-off). Optional:
+ops panels for the macro votes; point `INDIA_FII_DII_URL` at a live source.
 
 ---
 

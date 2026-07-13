@@ -20,7 +20,10 @@ from tests.signal_factory import make_context
 
 
 def _index(base: str, closes: list[float], day_open: float, **kw):
-    """An index context with enough 5m bars for market_bias to speak."""
+    """An index context with enough 5m bars for market_bias to speak. Neutralise
+    the opening-gap vote by default (prev_close == open) so direction tests
+    isolate the vote under test; gap/FII tests set these explicitly."""
+    kw.setdefault("prev_day_close", day_open)
     return make_context(
         base=base,
         symbol=f"NSE:{base}26JULFUT",
@@ -28,6 +31,34 @@ def _index(base: str, closes: list[float], day_open: float, **kw):
         day_open=day_open,
         **kw,
     )
+
+
+def test_fii_dii_vote_supplies_a_direction_vote():
+    from src.market_context import _fii_dii_vote
+
+    assert _fii_dii_vote(1200.0) == "LONG"   # strong net buying
+    assert _fii_dii_vote(-1200.0) == "SHORT"  # strong net selling
+    assert _fii_dii_vote(0.0) == "NEUTRAL"    # unavailable → never fabricated
+    assert _fii_dii_vote(100.0) == "NEUTRAL"  # below the MIN_CR threshold
+
+
+def test_opening_gap_vote():
+    from src.market_context import _open_gap_vote
+
+    assert _open_gap_vote(0.6) == "LONG"   # gap up
+    assert _open_gap_vote(-0.6) == "SHORT"  # gap down
+    assert _open_gap_vote(0.1) == "NEUTRAL"
+
+
+def test_fii_dii_can_complete_a_long_bias():
+    # NIFTY intraday LONG + a big FII/DII buy = two aligned votes, zero opposing.
+    ctxs = {
+        "NIFTY": _index(
+            "NIFTY", [23900 + i * 10 for i in range(25)], 23900,
+            fii_dii_net_cr=2000.0,
+        ),
+    }
+    assert classify_market_direction(ctxs) == MarketDirection.LONG_BIASED
 
 
 # --- session phase --------------------------------------------------------

@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 import config
-from src import owner_alerts
+from src import owner_alerts, strategy_edge
 from src.api.server import (
     build_app,
     serve_api,
@@ -33,6 +33,7 @@ from src.broker import token_store
 from src.broker.angel_feed import AngelDataFeed
 from src.broker.fyers_feed import FyersDataFeed
 from src.data.india_context_builder import IndiaContextBuilder
+from src.data.india_macro_store import IndiaMacroStore
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
@@ -69,10 +70,11 @@ async def _run() -> None:
     tick = IndiaTickStore()
     oi = IndiaOIStore()
     mkt = IndiaMarketData()
+    macro = IndiaMacroStore()
     expiry = ExpiryManager()
     session = SessionManager()
 
-    ctx_builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+    ctx_builder = IndiaContextBuilder(tick, oi, mkt, expiry, macro_store=macro)
     scanner = IndiaScanner(ctx_builder, session, expiry)
     router = IndiaSignalRouter()
     monitor = IndiaTradeMonitor(tick)
@@ -259,6 +261,19 @@ async def _run() -> None:
                     # daily PRE_OPEN->OPEN transition and a boot straight
                     # into an open session.
                     market_live_since = time.monotonic()
+                    # Prev-day FII/DII, once per session open (IB18 — off the
+                    # tick/scan path). Self-defensive: URL unset/unreachable
+                    # leaves the macro vote NEUTRAL, never fabricated.
+                    try:
+                        await macro.refresh()
+                    except Exception:
+                        logger.opt(exception=True).warning("macro refresh failed")
+                    # Load the measured-edge index once per open (not per scan);
+                    # empty until cohorts pass the sample floor → inert scoring.
+                    try:
+                        scanner.set_edge_index(await strategy_edge.get_edge_index())
+                    except Exception:
+                        logger.opt(exception=True).warning("edge index load failed")
                     if not feed_active[0]:
                         # The most likely daily failure: the Fyers token was
                         # never tapped this morning. Page the owner instead

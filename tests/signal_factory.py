@@ -82,6 +82,7 @@ def make_context(
     # pattern-bar-discipline tests pass a forming fraction explicitly.
     bar_elapsed_fraction: float = 1.0,
     key_levels_extra: list[float] | None = None,
+    fii_dii_net_cr: float = 0.0,
 ) -> IndiaContext:
     # A test that supplies an opening range means it as a final level unless
     # it says otherwise (the pre-09:45 forming-range case sets this False).
@@ -124,4 +125,5 @@ def make_context(
         last_tick_age_sec=last_tick_age_sec,
         bar_elapsed_fraction=bar_elapsed_fraction,
         key_levels_extra=key_levels_extra if key_levels_extra is not None else [],
+        fii_dii_net_cr=fii_dii_net_cr,
     )

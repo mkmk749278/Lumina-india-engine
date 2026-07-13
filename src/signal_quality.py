@@ -82,6 +82,16 @@ _RANGING_QUIET = (Regime.RANGING, Regime.QUIET)
 class IndiaSignalScoringEngine:
     """Scores a gate-passing candidate 0–100 and assigns its tier."""
 
+    def __init__(self) -> None:
+        # (setup_class, direction) -> {n, ev_net_pct}, loaded once per session
+        # open (src/strategy_edge.get_edge_index). Empty = no measured edge yet
+        # → the adjustment is inert (exact prior scoring).
+        self._edge_index: dict[tuple[str, str], dict] = {}
+
+    def set_edge_index(self, index: dict[tuple[str, str], dict]) -> None:
+        """Install the session's measured-edge lookup (cached; not per-scan)."""
+        self._edge_index = index or {}
+
     def score(self, signal: IndiaSignal, ctx: IndiaContext) -> float:
         total = (
             self._score_regime(signal, ctx)
@@ -93,8 +103,24 @@ class IndiaSignalScoringEngine:
             + self._score_vix_pcr(signal, ctx)
             + self._score_structure(signal, ctx)
             + self._score_index_alignment(signal, ctx)
+            + self._score_measured_edge(signal)
         )
         return min(100.0, max(0.0, total))
+
+    def _score_measured_edge(self, signal: IndiaSignal) -> float:
+        """Bounded ± nudge toward the candidate cohort's *measured* cost-adjusted
+        expectancy — the honest, non-overfit tier recalibration. Inert unless
+        the (setup, direction) cohort has ≥ ALLOCATOR_MIN_SAMPLE resolved trades,
+        so a thin/one-day sample changes nothing; capped at ±EDGE_ADJUST_CAP so a
+        single cohort can never dominate the 0–100 budget."""
+        if not config.EDGE_ADJUST_ENABLED:
+            return 0.0
+        cell = self._edge_index.get((signal.setup_class, signal.direction))
+        if cell is None or int(cell.get("n", 0)) < config.ALLOCATOR_MIN_SAMPLE:
+            return 0.0
+        raw = config.EDGE_ADJUST_K * float(cell.get("ev_net_pct", 0.0))
+        cap = config.EDGE_ADJUST_CAP
+        return max(-cap, min(cap, raw))
 
     @staticmethod
     def _score_regime(signal: IndiaSignal, ctx: IndiaContext) -> float:
