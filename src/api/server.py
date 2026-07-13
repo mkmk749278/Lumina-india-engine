@@ -38,7 +38,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 import config
-from src import fcm_dispatcher, signal_store
+from src import fcm_dispatcher, signal_store, strategy_edge
 from src.broker import token_store
 from src.utils import get_logger
 
@@ -355,6 +355,16 @@ def build_app() -> FastAPI:
     ) -> list[dict]:
         """Signal outcomes (TP1_HIT / SL_HIT / EXPIRED) joined onto signals."""
         return await signal_store.get_outcomes(date=date, limit=limit)
+
+    @app.get("/api/edge-matrix", dependencies=[Depends(_check_token)])
+    async def edge_matrix(
+        days: int = Query(30, ge=1, le=90),
+    ) -> dict:
+        """Strategy×Context edge matrix over the last ``days`` — realised
+        win-rate / net% / cost-adjusted expectancy per setup, tier, session
+        phase, VIX regime, and market-direction-vs-signal cohort. Measured
+        edge for the tier recalibration and the allocator (no emission change)."""
+        return await strategy_edge.get_edge_matrix(days=days)
 
     @app.post("/api/fcm-token")
     async def register_fcm_token(

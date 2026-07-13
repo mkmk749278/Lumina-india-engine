@@ -376,10 +376,21 @@ shipped** — 07-13 midday breakouts were the *best* cohort (48%/+3.74%), so
 blanket midday suppression would cut winners; `session_phase` stays a measured
 dimension for the edge matrix. 471 tests green (+6), ruff + mypy clean.
 
+**Phase 3 (done, this branch — ships normally):** `src/strategy_edge.py` — the
+Strategy×Context edge matrix. Aggregates resolved outcomes (joined to the Phase-1
+market-context stamp) into per-cohort win-rate / net% / cost-adjusted expectancy
+(EV = avg realised % − round-trip cost), sliced by setup, setup×direction, tier,
+session_phase, vix_regime, and **market-direction-vs-signal** (the direction gate's
+evidence surface). Win convention = every TP1-banked outcome (ops doctrine).
+Read-only over stored rows (no new I/O); surfaced at **`/api/edge-matrix?days=N`**
+(its same-change consumer). This is measured edge for the tier recalibration and
+the allocator, replacing trust in the inverted a-priori tier. `get_resolved_signals`
+added to `signal_store`. 5 new tests, 476 green, ruff + mypy clean.
+
 **Next (plan `claude/indian-stock-signals-quality-b3fz40`):** strategy-portfolio
-affinity tags → Strategy×Context edge matrix → tier recalibration (owner
-sign-off) → allocator in recommendation mode → FII/DII + Gift-Nifty feeds → ops
-observability.
+affinity tags → tier recalibration from the edge matrix (owner sign-off) →
+allocator in recommendation mode → FII/DII + Gift-Nifty feeds → ops observability
+(surface the edge matrix + context vector in the ops Strategy view).
 
 ---
 
