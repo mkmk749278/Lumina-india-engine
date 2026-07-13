@@ -69,6 +69,7 @@ def test_build_returns_india_context() -> None:
     assert ctx.current_oi == 5_000_000.0
     assert not ctx.pcr_is_extreme_bearish
     assert not ctx.pcr_is_extreme_bullish
+    assert ctx.pcr == 0.9  # 900k puts / 1M calls — raw PCR wired for the ledger
     assert ctx.tick_size == 0.05
 
 
@@ -147,3 +148,12 @@ def test_regime_60m_forms_from_seeded_htf() -> None:
 
     assert len(ctx.candles_60m) >= 56
     assert ctx.regime_60m == Regime.TRENDING_UP
+
+
+def test_build_pcr_zero_when_never_polled() -> None:
+    # A never-polled (or stale) chain reads 0.0 — "unavailable", not a ratio.
+    tick, _, mkt, expiry = _make_stores()
+    fresh_oi = IndiaOIStore()
+    builder = IndiaContextBuilder(tick, fresh_oi, mkt, expiry)
+    ctx = builder.build(_SYM, _BASE, _ist(11, 0))
+    assert ctx.pcr == 0.0

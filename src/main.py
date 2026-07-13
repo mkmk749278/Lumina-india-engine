@@ -47,6 +47,7 @@ from src.signal_store import (
     get_unresolved_signals_today,
     init_tables,
     insert_outcome,
+    mark_tp1_touched,
     write_session_summary,
 )
 from src.trade_monitor import IndiaTradeMonitor
@@ -301,6 +302,8 @@ async def _run() -> None:
                             oc.pct,
                             oc.resolved_at,
                         )
+                    for sid, touched_at in monitor.drain_tp1_marks():
+                        await mark_tp1_touched(sid, touched_at)
                     for oc in monitor.force_close_all(now):
                         await insert_outcome(
                             oc.signal_id,
@@ -361,6 +364,10 @@ async def _run() -> None:
                         oc.pct,
                         oc.resolved_at,
                     )
+                # Persist runner armings (two-target plan) so a banked TP1
+                # survives an engine restart instead of re-racing SL vs TP1.
+                for sid, touched_at in monitor.drain_tp1_marks():
+                    await mark_tp1_touched(sid, touched_at)
 
             # Feed watchdog — the 2026-07-10 incident: the WebSocket died
             # silently, the scanner ran all session on the frozen morning

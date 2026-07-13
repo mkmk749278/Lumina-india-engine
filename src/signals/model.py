@@ -85,8 +85,11 @@ class IndiaSignal:
     days_to_expiry: int = 0
     dispatch_timestamp: float = 0.0
 
-    # Filled after scoring / routing.
+    # Runner target (two-target plan, Session 18). 0.0 = no TP2 — the monitor
+    # runs the legacy single-target plan for this signal.
     tp2: float = 0.0
+
+    # Filled after scoring / routing.
     confidence: float = 0.0
     tier: str = Tier.FILTERED
     suppression_reason: str = ""
@@ -109,6 +112,11 @@ class IndiaContext:
     india_vix: float
     pcr_is_extreme_bearish: bool = False
     pcr_is_extreme_bullish: bool = False
+    # Raw market-wide PCR at scan time, stamped onto pcr_at_entry at emit so
+    # the 30-day ledger can correlate outcomes with positioning. 0.0 = chain
+    # never polled or stale beyond PCR_TTL_SEC (same freshness doctrine as
+    # VIX/OI) — analysis must treat 0.0 as "unavailable", not a zero ratio.
+    pcr: float = 0.0
     opening_range_high: float | None = None
     opening_range_low: float | None = None
     # True once the 09:15-09:45 opening range is final (IB17). Evaluators that

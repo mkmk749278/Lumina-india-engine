@@ -93,3 +93,63 @@ async def test_empty_day_summary_is_zeroes() -> None:
     assert summary["signal_count"] == 0
     assert summary["total_points"] == 0
     assert json.loads(summary["gates_fired"]) == {}
+
+
+async def test_mark_tp1_touched_persists_and_resumes():
+    # The runner arming must survive a restart: mark_tp1_touched writes
+    # tp1_touched_at and the unresolved-signals query carries it back.
+    from datetime import datetime
+
+    import config
+    from src.signal_store import (
+        get_unresolved_signals_today,
+        insert_signal,
+        mark_tp1_touched,
+    )
+    from src.signals.model import IndiaSignal
+
+    sig = IndiaSignal(
+        signal_id="two-leg-1",
+        symbol="NSE:NIFTY26JULFUT",
+        base="NIFTY",
+        direction="LONG",
+        setup_class="TREND_PULLBACK_EMA",
+        entry=24500.0,
+        sl=24450.0,
+        tp1=24600.0,
+        sl_pct=0.2,
+        tp1_pct=0.4,
+        rr_ratio=2.0,
+        lot_size=65,
+        tp2=24700.0,
+    )
+    await insert_signal(sig)
+
+    rows = await get_unresolved_signals_today()
+    assert rows[0]["tp1_touched_at"] is None
+    assert rows[0]["tp2"] == 24700.0
+
+    ts = config.IST.localize(datetime(2026, 7, 13, 11, 5))
+    await mark_tp1_touched("two-leg-1", ts)
+
+    rows = await get_unresolved_signals_today()
+    assert rows[0]["tp1_touched_at"] is not None
+
+
+async def test_session_summary_counts_two_target_outcomes():
+    from datetime import datetime
+
+    import config
+    from src.signal_store import insert_outcome, write_session_summary
+
+    now = config.IST.localize(datetime(2026, 7, 13, 15, 30))
+    await insert_outcome("s1", "TP1_BE", 24514.7, 57.35, 0.234, now)
+    await insert_outcome("s2", "TP2_HIT", 24700.0, 150.0, 0.612, now)
+    await insert_outcome("s3", "TP1_EXPIRED", 24550.0, 75.0, 0.306, now)
+    await insert_outcome("s4", "SL_HIT", 24450.0, -50.0, -0.204, now)
+
+    summary = await write_session_summary()
+    assert summary["tp1_be_count"] == 1
+    assert summary["tp2_count"] == 1
+    assert summary["tp1_expired_count"] == 1
+    assert summary["sl_count"] == 1

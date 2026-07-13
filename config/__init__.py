@@ -134,7 +134,12 @@ WEEKLY_OPTION_BASES: tuple[str, ...] = tuple(
 # --- session clock (IST) -------------------------------------------------
 PREOPEN_START: time = _safe_time("INDIA_PREOPEN_START", time(9, 0))
 MARKET_OPEN: time = _safe_time("INDIA_MARKET_OPEN", time(9, 15))
-LAST_SIGNAL_TIME: time = _safe_time("INDIA_LAST_SIGNAL_TIME", time(15, 20))
+# Last new-signal time. Was 15:20 — live 2026-07-10: signals emitted at
+# 15:01/15:19 had 11-29 minutes to the 15:30 close and either expired
+# worthless or forced a subscriber (1-3 min from FCM push to order) into a
+# no-time trade; the 14:45-15:30 bucket ran 16.7% win. 15:00 leaves a scalp
+# 30 minutes to resolve; the tp_feasibility_gate handles the remainder.
+LAST_SIGNAL_TIME: time = _safe_time("INDIA_LAST_SIGNAL_TIME", time(15, 0))
 FORCE_CLOSE_TIME: time = _safe_time("INDIA_FORCE_CLOSE_TIME", time(15, 25))
 MARKET_CLOSE: time = _safe_time("INDIA_MARKET_CLOSE", time(15, 30))
 # Expiry-day positions close 5 minutes earlier (Phase 2; OWNER_BRIEF IB16).
@@ -263,6 +268,25 @@ def round_trip_cost_points(price: float) -> float:
 # TP1 must clear this multiple of the round-trip cost, so a winner keeps a real
 # margin after costs instead of paying its whole target back in STT.
 MIN_SCALP_COST_MULT: float = _safe_float("INDIA_MIN_SCALP_COST_MULT", 1.5)
+
+# --- two-target trade plan (owner-directed, Session 18; revises IB12) ------
+# At TP1 the subscriber books TP1_EXIT_FRACTION of the position and moves the
+# stop on the remainder to break-even; the runner targets TP2. TP2 is the next
+# structural level beyond TP1 (when one sits in a sane band) or a multiple of
+# the TP1 distance. The feasibility gate applies to TP1 only — TP2 is a
+# stretch target with the runner protected at BE.
+TP2_ENABLED: bool = _safe_bool("INDIA_TP2_ENABLED", True)
+# Fallback TP2 distance as a multiple of the TP1 distance (2.0 = twice as far).
+TP2_DIST_MULT: float = _safe_float("INDIA_TP2_DIST_MULT", 2.0)
+# A mapped structural level only becomes TP2 inside this band of TP1 distances
+# (too close adds nothing over TP1; too far is a hope, not a target).
+TP2_LEVEL_MIN_MULT: float = _safe_float("INDIA_TP2_LEVEL_MIN_MULT", 1.5)
+TP2_LEVEL_MAX_MULT: float = _safe_float("INDIA_TP2_LEVEL_MAX_MULT", 3.0)
+# Fraction of the position booked at TP1 (the rest runs to TP2 behind BE).
+TP1_EXIT_FRACTION: float = _safe_float("INDIA_TP1_EXIT_FRACTION", 0.5)
+# Break-even stop offset: True places BE one round-trip cost beyond entry so a
+# "scratch" runner nets ~0 after STT instead of a hidden loss; False = entry.
+BE_COST_BUFFER: bool = _safe_bool("INDIA_BE_COST_BUFFER", True)
 
 # Minimum viable TP1 distance for stock bases, % of entry (IB11 equivalent).
 MIN_SCALP_PCT: float = _safe_float("INDIA_MIN_SCALP_PCT", 0.10)
@@ -491,6 +515,17 @@ LSR_SL_ATR_MULT: float = _safe_float("LSR_SL_ATR_MULT", 0.5)
 LSR_MIN_SL_PCT: float = _safe_float("LSR_MIN_SL_PCT", 0.06)
 LSR_MAX_SL_PCT: float = _safe_float("LSR_MAX_SL_PCT", 1.0)
 LSR_MIN_RR: float = _safe_float("LSR_MIN_RR", 1.5)
+# The swept swing must BE a key level, not any 15m wiggle. LSR's thesis is
+# resting liquidity beyond an obvious level; a sweep of a nobody-swing carries
+# no such liquidity. Live 2026-07-10 (13:49-15:19, first post-#52 window): LSR
+# went 0/6 for -0.79% and its inflated A-tier scores drove the tier inversion
+# (A 26.7% win vs B 42.1%). The swept level must sit within
+# LSR_KEY_LEVEL_ATR_TOL x ATR of PDH/PDL/PDC, the locked opening range, or
+# session VWAP. Round numbers are deliberately excluded — a 0.25-ATR tolerance
+# on NIFTY's 50-pt round grid would qualify a large share of arbitrary swings
+# and gut the requirement.
+LSR_REQUIRE_KEY_LEVEL: bool = _safe_bool("INDIA_LSR_REQUIRE_KEY_LEVEL", True)
+LSR_KEY_LEVEL_ATR_TOL: float = _safe_float("INDIA_LSR_KEY_LEVEL_ATR_TOL", 0.25)
 
 # --- evaluator geometry: OPENING_RANGE_BREAKOUT (spec §10.2) -------------
 ORB_MIN_RANGE_PCT: float = _safe_float("ORB_MIN_RANGE_PCT", 0.10)

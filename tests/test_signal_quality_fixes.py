@@ -159,7 +159,7 @@ def test_index_conflict_gate_suppresses_stock_fighting_index() -> None:
 def test_index_conflict_gate_passes_aligned_stock() -> None:
     chain = GateChain()
     sig = make_signal(direction=Direction.LONG, base="RELIANCE")
-    ctx = make_context(base="RELIANCE", atr14_5m=20.0)
+    ctx = make_context(base="RELIANCE", atr14_5m=20.0, regime_60m=Regime.TRENDING_UP)
     ctx.index_bias = Direction.LONG
     gate = chain.check(sig, ctx, SessionState.OPEN, _NOW)
     assert gate is None
@@ -168,7 +168,7 @@ def test_index_conflict_gate_passes_aligned_stock() -> None:
 def test_index_conflict_gate_exempts_index_bases() -> None:
     chain = GateChain()
     sig = make_signal(direction=Direction.LONG, base="NIFTY")
-    ctx = make_context(base="NIFTY")
+    ctx = make_context(base="NIFTY", regime_60m=Regime.TRENDING_UP)
     ctx.index_bias = Direction.SHORT
     gate = chain.check(sig, ctx, SessionState.OPEN, _NOW)
     assert gate is None
@@ -178,7 +178,7 @@ def test_index_conflict_gate_neutral_bias_passes() -> None:
     chain = GateChain()
     sig = make_signal(direction=Direction.SHORT, base="RELIANCE")
     # index_bias defaults NEUTRAL
-    ctx = make_context(base="RELIANCE", atr14_5m=20.0)
+    ctx = make_context(base="RELIANCE", atr14_5m=20.0, regime_60m=Regime.TRENDING_UP)
     gate = chain.check(sig, ctx, SessionState.OPEN, _NOW)
     assert gate is None
 

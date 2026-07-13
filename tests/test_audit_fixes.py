@@ -115,7 +115,7 @@ def test_min_scalp_gate_suppresses_sub_viable_index_target() -> None:
 def test_min_scalp_gate_passes_viable_index_target() -> None:
     chain = GateChain()
     sig = make_signal(entry=24000.0, sl=23985.0, tp1=24030.0)
-    ctx = make_context(atr14_5m=10.0)
+    ctx = make_context(atr14_5m=10.0, regime_60m=Regime.TRENDING_UP)
     result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
     assert result is None
 
@@ -174,7 +174,7 @@ def test_min_atr_gate_scales_for_stocks() -> None:
         Candle(ts=_ist(10, 0), open=500.0, high=500.5, low=499.5,
                close=500.0, volume=1000.0)
     ]
-    ctx = make_context(base="SBIN", atr14_5m=0.4)
+    ctx = make_context(base="SBIN", atr14_5m=0.4, regime_60m=Regime.TRENDING_UP)
     object.__setattr__(ctx, "candles_5m", candles)
     result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
     assert result is None

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 import config
 from src.channels.base import Evaluator
@@ -11,6 +11,7 @@ from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
 from src.market.candle import Candle
+from src.regime import Regime
 from src.scanner import (
     _MAX_PER_DAY,
     _MAX_PER_DIRECTION,
@@ -49,7 +50,7 @@ def test_session_gate_suppresses_when_closed() -> None:
 def test_session_gate_passes_when_open() -> None:
     chain = GateChain()
     sig = make_signal()
-    ctx = make_context()
+    ctx = make_context(regime_60m=Regime.TRENDING_UP)
     result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
     assert result is None
 
@@ -95,7 +96,7 @@ def test_event_risk_gate_suppresses_high_vix() -> None:
 def test_event_risk_gate_passes_normal_vix() -> None:
     chain = GateChain()
     sig = make_signal()
-    ctx = make_context(india_vix=15.0)
+    ctx = make_context(india_vix=15.0, regime_60m=Regime.TRENDING_UP)
     result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
     assert result is None
 
@@ -113,7 +114,9 @@ def test_circuit_check_gate_passes_normal_move() -> None:
     chain = GateChain()
     sig = make_signal()
     candles = [c(high=24010.0, low=23990.0, close=24005.0)]
-    ctx = make_context(candles_5m=candles, day_open=24000.0)
+    ctx = make_context(
+        candles_5m=candles, day_open=24000.0, regime_60m=Regime.TRENDING_UP
+    )
     result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
     assert result is None
 
@@ -129,7 +132,7 @@ def test_min_atr_gate_suppresses_low_atr() -> None:
 def test_min_atr_gate_passes_normal_atr() -> None:
     chain = GateChain()
     sig = make_signal()
-    ctx = make_context(atr14_5m=10.0)
+    ctx = make_context(atr14_5m=10.0, regime_60m=Regime.TRENDING_UP)
     result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
     assert result is None
 
@@ -147,7 +150,7 @@ def test_oi_liquidity_gate_passes_zero_oi() -> None:
     """Zero OI means data not yet available — don't suppress."""
     chain = GateChain()
     sig = make_signal()
-    ctx = make_context(atr14_5m=10.0)
+    ctx = make_context(atr14_5m=10.0, regime_60m=Regime.TRENDING_UP)
     result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
     assert result is None
 
@@ -285,7 +288,7 @@ def test_daily_cap_disabled_by_default_is_unlimited() -> None:
 def test_confidence_floor_gate_suppresses_low_score() -> None:
     chain = GateChain()
     sig = make_signal()
-    ctx = make_context(atr14_5m=10.0)
+    ctx = make_context(atr14_5m=10.0, regime_60m=Regime.TRENDING_UP)
     below_floor = config.CONFIDENCE_EMIT_FLOOR - 5.0
     result = chain.check(
         sig, ctx, SessionState.OPEN, _ist(10, 0), confidence=below_floor
@@ -296,9 +299,133 @@ def test_confidence_floor_gate_suppresses_low_score() -> None:
 def test_confidence_floor_gate_passes_high_score() -> None:
     chain = GateChain()
     sig = make_signal()
-    ctx = make_context(atr14_5m=10.0)
+    ctx = make_context(atr14_5m=10.0, regime_60m=Regime.TRENDING_UP)
     result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0), confidence=80.0)
     assert result is None
+
+
+# ── Chop gate (Session 18: double-RANGING candidates went 0/8 live) ──
+
+
+def test_chop_gate_suppresses_double_ranging() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context()  # factory defaults: RANGING / RANGING
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result == "chop_gate"
+    supp = chain.suppressions[-1]
+    assert supp.gate == "chop_gate"
+    assert "RANGING" in supp.reason  # telemetry names both regimes
+
+
+def test_chop_gate_suppresses_quiet_combination() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(regime_60m=Regime.QUIET, regime_daily=Regime.RANGING)
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
+    assert result == "chop_gate"
+
+
+def test_chop_gate_passes_when_either_timeframe_trends() -> None:
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context(regime_60m=Regime.TRENDING_DOWN, regime_daily=Regime.RANGING)
+    assert chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0)) is None
+    ctx = make_context(regime_60m=Regime.RANGING, regime_daily=Regime.TRENDING_UP)
+    assert chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0)) is None
+
+
+def test_chop_gate_exempt_setup_passes(monkeypatch) -> None:
+    import src.scanner as scanner_mod
+
+    monkeypatch.setattr(
+        scanner_mod,
+        "_CHOP_EXEMPT_SETUPS",
+        frozenset({SetupClass.LIQUIDITY_SWEEP_REVERSAL}),
+    )
+    chain = GateChain()
+    sig = make_signal(setup_class=SetupClass.LIQUIDITY_SWEEP_REVERSAL)
+    ctx = make_context()
+    assert chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0)) is None
+
+
+def test_chop_gate_kill_switch(monkeypatch) -> None:
+    import src.scanner as scanner_mod
+
+    monkeypatch.setattr(scanner_mod, "_CHOP_GATE_ENABLED", False)
+    chain = GateChain()
+    sig = make_signal()
+    ctx = make_context()
+    assert chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0)) is None
+
+
+# ── TP feasibility gate (Session 18: rr>2.5 went 0/7, far targets expired) ──
+
+
+def test_tp_feasibility_gate_suppresses_late_far_target() -> None:
+    chain = GateChain()
+    # 15:00 -> 6 five-minute bars to the 15:30 close; budget = 10 ATR x 6 x 0.30
+    # = 18 pts. A 40-pt TP1 cannot be reached in the time left.
+    sig = make_signal(entry=24000.0, sl=23980.0, tp1=24040.0)
+    ctx = make_context(
+        atr14_5m=10.0,
+        regime_60m=Regime.TRENDING_UP,
+        scan_time_ist=time(15, 0),
+    )
+    result = chain.check(sig, ctx, SessionState.OPEN, _ist(15, 0))
+    assert result == "tp_feasibility_gate"
+    assert "budget" in chain.suppressions[-1].reason
+
+
+def test_tp_feasibility_gate_passes_reachable_target() -> None:
+    chain = GateChain()
+    # 14:00 -> 18 bars; budget = 10 x 18 x 0.30 = 54 pts >= the 40-pt TP1.
+    sig = make_signal(entry=24000.0, sl=23980.0, tp1=24040.0)
+    ctx = make_context(
+        atr14_5m=10.0,
+        regime_60m=Regime.TRENDING_UP,
+        scan_time_ist=time(14, 0),
+    )
+    assert chain.check(sig, ctx, SessionState.OPEN, _ist(14, 0)) is None
+
+
+def test_tp_feasibility_gate_passes_without_scan_time() -> None:
+    # Directly built contexts (scan_time_ist=None) exercise setup logic
+    # without a session clock — the gate must not fire on them.
+    chain = GateChain()
+    sig = make_signal(entry=24000.0, sl=23980.0, tp1=24400.0)
+    ctx = make_context(atr14_5m=10.0, regime_60m=Regime.TRENDING_UP)
+    assert chain.check(sig, ctx, SessionState.OPEN, _ist(15, 0)) is None
+
+
+def test_tp_feasibility_gate_dev_mode_bypass(monkeypatch) -> None:
+    # Off-hours dev scans have zero bars remaining by definition — the gate
+    # would kill the whole dev pipeline without the bypass.
+    monkeypatch.setattr(config, "INDIA_DEV_MODE", True)
+    chain = GateChain()
+    sig = make_signal(entry=24000.0, sl=23980.0, tp1=24400.0)
+    ctx = make_context(
+        atr14_5m=10.0,
+        regime_60m=Regime.TRENDING_UP,
+        scan_time_ist=time(20, 0),
+    )
+    assert chain.check(sig, ctx, SessionState.OPEN, _ist(20, 0)) is None
+
+
+def test_tp_feasibility_efficiency_override(monkeypatch) -> None:
+    import src.scanner as scanner_mod
+
+    monkeypatch.setattr(scanner_mod, "_TP_FEASIBILITY_EFFICIENCY", 1.0)
+    chain = GateChain()
+    # Same late far target as the suppression test; at efficiency 1.0 the
+    # budget is 60 pts and the 40-pt TP1 passes.
+    sig = make_signal(entry=24000.0, sl=23980.0, tp1=24040.0)
+    ctx = make_context(
+        atr14_5m=10.0,
+        regime_60m=Regime.TRENDING_UP,
+        scan_time_ist=time(15, 0),
+    )
+    assert chain.check(sig, ctx, SessionState.OPEN, _ist(15, 0)) is None
 
 
 def test_suppressions_logged() -> None:
@@ -386,6 +513,9 @@ def _make_scanner(evaluators: list[Evaluator] | None = None):
 
     builder = IndiaContextBuilder(tick, oi, mkt, expiry)
     builder.set_prev_day(_SYM, high=24200.0, low=23800.0, close=24000.0)
+    # The 60-bar 5m seed yields < 15 60m candles (regime_60m stays RANGING);
+    # a trending daily regime keeps the chop gate out of scan-mechanics tests.
+    builder.set_daily_regime(_SYM, Regime.TRENDING_UP)
 
     session = SessionManager()
     return IndiaScanner(builder, session, expiry, evaluators=evaluators)
@@ -449,6 +579,7 @@ def test_scanner_skips_index_only_evaluator_for_stock() -> None:
     mkt.update_vix(15.0)
     builder = IndiaContextBuilder(tick, oi, mkt, expiry)
     builder.set_prev_day(stock_sym, high=1450.0, low=1380.0, close=1400.0)
+    builder.set_daily_regime(stock_sym, Regime.TRENDING_UP)
     scanner = IndiaScanner(
         builder, SessionManager(), expiry,
         evaluators=[_IndexOnlyEvaluator(), _AlwaysLongEvaluator()],
@@ -503,6 +634,43 @@ def test_scanner_stamps_metadata(monkeypatch) -> None:
     assert sig.atr_at_entry > 0
     assert sig.vix_at_entry == 15.0
     assert sig.expiry_date is not None
+
+
+def test_scanner_stamps_pcr_at_entry(monkeypatch) -> None:
+    # pcr_at_entry was a never-wired scaffold — all 40 live signals on
+    # 2026-07-10 stored 0.0 while vix_at_entry was populated. The emitted
+    # signal must now carry the raw market-wide PCR.
+    monkeypatch.setattr(config, "CONFIDENCE_EMIT_FLOOR", 0.0)
+    tick = IndiaTickStore()
+    oi = IndiaOIStore()
+    mkt = IndiaMarketData()
+    expiry = ExpiryManager()
+    candles = [
+        Candle(
+            ts=_ist(9, 15) + timedelta(minutes=i * 5),
+            open=24000.0 + i * 10,
+            high=24010.0 + i * 10,
+            low=23990.0 + i * 10,
+            close=24005.0 + i * 10,
+            volume=1500.0,
+        )
+        for i in range(60)
+    ]
+    tick.seed(_SYM, candles)
+    tick._last_tick_ts[_SYM] = _ist(11, 30)
+    mkt.update_vix(15.0)
+    oi.update_pcr(total_put_oi=1_200_000.0, total_call_oi=1_000_000.0)
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+    builder.set_prev_day(_SYM, high=24200.0, low=23800.0, close=24000.0)
+    builder.set_daily_regime(_SYM, Regime.TRENDING_UP)
+    scanner = IndiaScanner(
+        builder, SessionManager(), expiry, evaluators=[_AlwaysLongEvaluator()]
+    )
+
+    signals = scanner.scan({_BASE: _SYM}, _ist(11, 0))
+
+    assert len(signals) == 1
+    assert signals[0].pcr_at_entry == 1.2
 
 
 class _CaptureBiasEvaluator(Evaluator):
