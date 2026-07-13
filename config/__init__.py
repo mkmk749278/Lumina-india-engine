@@ -476,6 +476,18 @@ MIN_TRIGGER_RANGE_ATR: float = _safe_float("INDIA_MIN_TRIGGER_RANGE_ATR", 0.5)
 # last ~minute of each 5m bar; a completed bar always qualifies.
 PATTERN_BAR_MIN_ELAPSED: float = _safe_float("INDIA_PATTERN_BAR_MIN_ELAPSED", 0.8)
 
+# --- autonomous allocator (recommendation mode) --------------------------
+# The allocator turns the measured edge matrix into per-cohort EMIT / SUPPRESS
+# / HOLD verdicts (src/strategy_allocator.py). It runs observe-only for now —
+# surfaced at /api/allocator, it changes no emission — so these thresholds
+# only shape the recommendation, never live behaviour yet. A cohort needs at
+# least MIN_SAMPLE resolved trades before it is judged at all; above the EV
+# floor (expectancy already net of the round-trip cost) it reads EMIT, at or
+# below SUPPRESS_EV it reads SUPPRESS, in between HOLD.
+ALLOCATOR_MIN_SAMPLE: int = _safe_int("INDIA_ALLOCATOR_MIN_SAMPLE", 20)
+ALLOCATOR_EV_FLOOR: float = _safe_float("INDIA_ALLOCATOR_EV_FLOOR", 0.0)
+ALLOCATOR_SUPPRESS_EV: float = _safe_float("INDIA_ALLOCATOR_SUPPRESS_EV", -0.05)
+
 # --- confidence tiers ----------------------------------------------------
 # Emit floor and A+ cutoff on the 0-100 confidence score (spec §11/§13.1).
 # Below the floor a candidate is FILTERED (no FCM, no DB write).
