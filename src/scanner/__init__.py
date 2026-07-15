@@ -88,7 +88,7 @@ from src.session.event_calendar import EventCalendar
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
 from src.signal_quality import IndiaSignalScoringEngine, tier_for
-from src.signals.model import Direction, IndiaContext, IndiaSignal
+from src.signals.model import Direction, IndiaContext, IndiaSignal, is_trend_family
 from src.signals.model import Tier as Tier
 from src.utils import get_logger
 
@@ -165,6 +165,23 @@ _CHOP_EXEMPT_SETUPS: frozenset[str] = frozenset(
     if s.strip()
 )
 _CHOP_REGIMES = (Regime.RANGING, Regime.QUIET)
+# Regime/setup-compatibility gate. `_chop_gate` only fires when BOTH timeframes
+# are non-directional; a trend-continuation setup whose 60m looks "trending"
+# (noise inside a ranging day) still sails through when the *daily* regime is
+# RANGING/QUIET. Live 2026-07-14: TREND-family setups in a ranging daily regime
+# went 3/23 (13%, -3.76% gross) — essentially the whole day's loss — while
+# reversion/breakout setups in the same tape won 50%. A trend setup needs the
+# higher timeframe to actually trend; a ranging daily is the absence of what it
+# trades. Exempt list is the escape hatch (CSV of SetupClass names).
+_REGIME_SETUP_GATE_ENABLED: bool = config._safe_bool(
+    "INDIA_REGIME_SETUP_GATE_ENABLED", True
+)
+_REGIME_SETUP_EXEMPT_SETUPS: frozenset[str] = frozenset(
+    s.strip().upper()
+    for s in config._safe_str("INDIA_REGIME_SETUP_GATE_EXEMPT_SETUPS", "").split(",")
+    if s.strip()
+)
+_REGIME_SETUP_REGIMES = (Regime.RANGING, Regime.QUIET)
 # Market-direction gate. The scorer's index-alignment component (5 pts) never
 # stopped counter-trend signals from clearing the floor: live 2026-07-13 the
 # tape was decisively LONG-biased all day and SHORT signals went 6/45 (13%,
@@ -322,6 +339,7 @@ class GateChain:
             # gates against the next live window — and the older gates'
             # week-over-week telemetry attribution stays comparable.
             self._chop_gate,
+            self._regime_setup_gate,
             self._tp_feasibility_gate,
         ):
             reason = gate_fn(signal, ctx, session_state, now)
@@ -742,6 +760,34 @@ class GateChain:
             return (
                 f"chop: 60m {ctx.regime_60m.value} + daily"
                 f" {ctx.regime_daily.value} — no directional regime to trade"
+            )
+        return None
+
+    @staticmethod
+    def _regime_setup_gate(
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        session_state: SessionState,
+        now: datetime,
+    ) -> str | None:
+        """Trend-continuation setups need a trending higher timeframe. When the
+        *daily* regime is RANGING/QUIET a trend setup is fighting the tape even
+        if its 60m looks trending (chop inside a range). Live 2026-07-14: the
+        TREND family in a ranging daily went 3/23 (13%, -3.76% gross), the day's
+        loss; reversion/breakout in the same tape won 50%. Only the TREND family
+        is gated — reversion/breakout/neutral setups are untouched. Exempt list
+        is the escape hatch if a trend setup later proves range-viable in the
+        30-day ledger."""
+        if not _REGIME_SETUP_GATE_ENABLED:
+            return None
+        if not is_trend_family(signal.setup_class):
+            return None
+        if signal.setup_class in _REGIME_SETUP_EXEMPT_SETUPS:
+            return None
+        if ctx.regime_daily in _REGIME_SETUP_REGIMES:
+            return (
+                f"regime/setup: trend-continuation {signal.setup_class} in a"
+                f" {ctx.regime_daily.value} daily regime — no trend to continue"
             )
         return None
 

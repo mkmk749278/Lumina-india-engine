@@ -24,6 +24,10 @@ def _index(base: str, closes: list[float], day_open: float, **kw):
     the opening-gap vote by default (prev_close == open) so direction tests
     isolate the vote under test; gap/FII tests set these explicitly."""
     kw.setdefault("prev_day_close", day_open)
+    # These tests isolate the price-action / gap / FII direction votes, so pin
+    # the daily regime neutral (the factory default is a trending daily, which
+    # would add a regime vote these cases don't intend to exercise).
+    kw.setdefault("regime_daily", Regime.RANGING)
     return make_context(
         base=base,
         symbol=f"NSE:{base}26JULFUT",

@@ -48,7 +48,11 @@ def make_context(
     *,
     base: str = "NIFTY",
     regime_60m: Regime = Regime.RANGING,
-    regime_daily: Regime = Regime.RANGING,
+    # A trending daily by default: the default setup is a trend-continuation
+    # one (TREND_PULLBACK_EMA), and the regime/setup gate now suppresses that
+    # family in a ranging/quiet daily. Tests that exercise the ranging-daily
+    # path (chop / regime-setup gates) set this explicitly.
+    regime_daily: Regime = Regime.TRENDING_UP,
     candles_5m: list[Candle] | None = None,
     candles_15m: list[Candle] | None = None,
     volume_avg_5m_20: float = 1000.0,
