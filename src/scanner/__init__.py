@@ -182,12 +182,6 @@ _REGIME_SETUP_EXEMPT_SETUPS: frozenset[str] = frozenset(
     if s.strip()
 )
 _REGIME_SETUP_REGIMES = (Regime.RANGING, Regime.QUIET)
-# Per-setup-per-day diversity cap. The flood gate (_MAX_PER_SETUP_PER_SCAN)
-# resets every scan, so one setup class can dominate a whole day across scans
-# and bases: live 2026-07-14, TREND_PULLBACK_EMA alone was 22 of 54 signals
-# (41%), -2.8% gross. A single failing setup should not be able to define the
-# day. 0 = OFF (matches _MAX_PER_DAY convention).
-_MAX_PER_SETUP_PER_DAY: int = config._safe_int("INDIA_MAX_PER_SETUP_PER_DAY", 8)
 # Market-direction gate. The scorer's index-alignment component (5 pts) never
 # stopped counter-trend signals from clearing the floor: live 2026-07-13 the
 # tape was decisively LONG-biased all day and SHORT signals went 6/45 (13%,
@@ -247,8 +241,6 @@ class GateChain:
         self._last_fire: dict[str, datetime] = {}
         self._emitted_today: Counter[tuple[str, str]] = Counter()
         self._emitted_total_today = 0
-        # setup_class -> emissions today (per-setup-per-day diversity cap).
-        self._setup_emitted_today: Counter[str] = Counter()
         self._suppressions: list[Suppression] = []
         # base -> (direction, ts) of its latest emission (direction-conflict gate).
         self._last_base_emission: dict[str, tuple[str, datetime]] = {}
@@ -288,8 +280,6 @@ class GateChain:
                     self._last_fire[key] = ts
             self._emitted_today[(base, direction)] += 1
             self._emitted_total_today += 1
-            if setup:
-                self._setup_emitted_today[setup] += 1
             last = self._last_base_emission.get(base)
             if last is None or last[1] < ts:
                 self._last_base_emission[base] = (direction, ts)
@@ -392,8 +382,7 @@ class GateChain:
     ) -> str | None:
         """Emission-stage gates, run highest-confidence-first per scan:
         per-direction daily cap, direction-conflict window, correlation-group
-        cap, per-setup per-scan flood cap, per-setup per-day diversity cap,
-        per-scan cap, universe-wide daily cap."""
+        cap, per-scan cap, universe-wide daily cap."""
         count = self._emitted_today[(ctx.base, signal.direction)]
         if count >= _MAX_PER_DIRECTION:
             return self._suppress(
@@ -443,18 +432,6 @@ class GateChain:
                 ctx,
                 now,
             )
-        if _MAX_PER_SETUP_PER_DAY > 0:
-            setup_day_count = self._setup_emitted_today[signal.setup_class]
-            if setup_day_count >= _MAX_PER_SETUP_PER_DAY:
-                return self._suppress(
-                    "setup_diversity_gate",
-                    f"{signal.setup_class} already emitted {setup_day_count}x"
-                    f" today (cap {_MAX_PER_SETUP_PER_DAY} — one setup must not"
-                    f" define the day)",
-                    signal,
-                    ctx,
-                    now,
-                )
         if emitted_this_scan >= _MAX_PER_SCAN:
             return self._suppress(
                 "scan_cap_gate",
@@ -482,7 +459,6 @@ class GateChain:
         self._last_fire[key] = now
         self._emitted_today[(base, direction)] += 1
         self._emitted_total_today += 1
-        self._setup_emitted_today[setup_class] += 1
         self._last_base_emission[base] = (direction, now)
         self._group_dir_this_scan[(dependency.group_for(base), direction)] += 1
         self._setup_dir_this_scan[(setup_class, direction)] += 1
@@ -491,7 +467,6 @@ class GateChain:
         self._last_fire.clear()
         self._emitted_today.clear()
         self._emitted_total_today = 0
-        self._setup_emitted_today.clear()
         self._suppressions.clear()
         self._last_base_emission.clear()
         self._group_dir_this_scan.clear()
