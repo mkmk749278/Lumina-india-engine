@@ -310,7 +310,7 @@ def test_confidence_floor_gate_passes_high_score() -> None:
 def test_chop_gate_suppresses_double_ranging() -> None:
     chain = GateChain()
     sig = make_signal()
-    ctx = make_context()  # factory defaults: RANGING / RANGING
+    ctx = make_context(regime_60m=Regime.RANGING, regime_daily=Regime.RANGING)
     result = chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0))
     assert result == "chop_gate"
     supp = chain.suppressions[-1]
@@ -328,7 +328,9 @@ def test_chop_gate_suppresses_quiet_combination() -> None:
 
 def test_chop_gate_passes_when_either_timeframe_trends() -> None:
     chain = GateChain()
-    sig = make_signal()
+    # A reversion setup so the regime/setup gate (trend-family only) doesn't
+    # interfere — this test isolates the chop gate.
+    sig = make_signal(setup_class=SetupClass.SR_FLIP_RETEST)
     ctx = make_context(regime_60m=Regime.TRENDING_DOWN, regime_daily=Regime.RANGING)
     assert chain.check(sig, ctx, SessionState.OPEN, _ist(10, 0)) is None
     ctx = make_context(regime_60m=Regime.RANGING, regime_daily=Regime.TRENDING_UP)

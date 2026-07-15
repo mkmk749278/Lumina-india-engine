@@ -46,6 +46,55 @@ class SetupClass:
     EXPIRY_GAMMA_SQUEEZE = "EXPIRY_GAMMA_SQUEEZE"
 
 
+class SetupFamily:
+    """Behavioural family of a setup — the axis that decides regime fit.
+
+    TREND setups need an established directional trend to *continue*; they
+    whipsaw in a ranging/quiet daily regime (the dominant 2026-07-14 loss
+    cohort). REVERSION setups fade extremes and prefer ranges. BREAKOUT setups
+    need a volatility expansion. NEUTRAL setups (VIX/PCR/expiry) are
+    regime-agnostic by construction. Keyed by ``SetupClass`` value.
+    """
+
+    TREND = "TREND"
+    REVERSION = "REVERSION"
+    BREAKOUT = "BREAKOUT"
+    NEUTRAL = "NEUTRAL"
+
+
+# setup_class -> family. Single source of truth reused by the scanner's
+# regime/setup gate and the confidence scorer. Seeded from the scorer's
+# pre-existing implicit encoding (REGIME_AFFINITY opposing==0 rows are strict
+# trend-followers; _BREAKOUT_SETUPS are breakouts).
+SETUP_FAMILY: dict[str, str] = {
+    SetupClass.TREND_PULLBACK_EMA: SetupFamily.TREND,
+    SetupClass.MA_CROSS_TREND_SHIFT: SetupFamily.TREND,
+    SetupClass.BREAKDOWN_SHORT: SetupFamily.TREND,
+    SetupClass.DIVERGENCE_CONTINUATION: SetupFamily.TREND,
+    SetupClass.LIQUIDITY_SWEEP_REVERSAL: SetupFamily.REVERSION,
+    SetupClass.SR_FLIP_RETEST: SetupFamily.REVERSION,
+    SetupClass.FAILED_AUCTION_RECLAIM: SetupFamily.REVERSION,
+    SetupClass.OI_SPIKE_REVERSAL: SetupFamily.REVERSION,
+    SetupClass.OPENING_RANGE_BREAKOUT: SetupFamily.BREAKOUT,
+    SetupClass.VOLUME_SURGE_BREAKOUT: SetupFamily.BREAKOUT,
+    SetupClass.QUIET_COMPRESSION_BREAK: SetupFamily.BREAKOUT,
+    SetupClass.INDIA_VIX_EXTREME: SetupFamily.NEUTRAL,
+    SetupClass.PCR_EXTREME: SetupFamily.NEUTRAL,
+    SetupClass.EXPIRY_GAMMA_SQUEEZE: SetupFamily.NEUTRAL,
+}
+
+# Strict trend-continuation setups — the ones that lose in a non-trending
+# daily regime. Used by the scanner's _regime_setup_gate and the scorer.
+TREND_FAMILY: frozenset[str] = frozenset(
+    s for s, fam in SETUP_FAMILY.items() if fam == SetupFamily.TREND
+)
+
+
+def is_trend_family(setup_class: str) -> bool:
+    """True if *setup_class* is a strict trend-continuation setup."""
+    return setup_class in TREND_FAMILY
+
+
 class Tier:
     A_PLUS = "A+"
     A = "A"

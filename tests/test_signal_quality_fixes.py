@@ -49,6 +49,9 @@ def test_rehydrate_restores_daily_cap(monkeypatch) -> None:
     import src.scanner as scanner_mod
 
     monkeypatch.setattr(scanner_mod, "_MAX_PER_DAY", 10)
+    # Isolate the universe-wide daily cap: the 10 rehydrated rows share one
+    # setup, which would trip the per-setup diversity cap first.
+    monkeypatch.setattr(scanner_mod, "_MAX_PER_SETUP_PER_DAY", 0)
     chain = GateChain()
     chain.rehydrate(_rows(10), _NOW)
     chain.begin_scan()
