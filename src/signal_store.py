@@ -435,8 +435,11 @@ async def get_outcomes(date: str | None = None, limit: int = 100) -> list[dict]:
         f"""
         SELECT o.signal_id, o.outcome, o.exit_price, o.points, o.pct,
                o.resolved_at,
+               o.mfe_pct, o.mae_pct, o.bars_to_resolve,
+               o.resolution_tf, o.ambiguous_tie,
                s.symbol, s.base, s.direction, s.setup_class, s.tier,
-               s.entry, s.sl, s.tp1, s.tp2, s.created_at AS emitted_at
+               s.entry, s.sl, s.tp1, s.tp2, s.entry_type,
+               s.created_at AS emitted_at
         FROM india_signal_outcomes o
         LEFT JOIN india_signals s ON s.signal_id = o.signal_id
         {where}
