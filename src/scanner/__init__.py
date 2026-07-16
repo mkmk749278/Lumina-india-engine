@@ -58,6 +58,7 @@ telemetry — CLAUDE.md). Surface via ``/api/india/suppressed`` and ops.
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -1030,6 +1031,27 @@ class IndiaScanner:
                     continue
 
                 confidence = self._scorer.score(candidate, ctx)
+                # Scoring v2 (Session 21): computed for every scored
+                # candidate; SHADOW persists it for the calibration window,
+                # ACTIVE (owner sign-off) makes it the confidence that
+                # feeds the floor, tiering, and delivery. v1 always rides
+                # in the component JSON for rollback comparison.
+                if config.SCORING_V2_SHADOW or config.SCORING_V2_ACTIVE:
+                    v2, comps = self._scorer.score_v2(
+                        candidate,
+                        ctx,
+                        session_phase=market_ctx.session_phase,
+                        bias_age_min=bias_age_min,
+                        dup_index=self._gates.emitted_count(
+                            base, candidate.direction
+                        )
+                        + 1,
+                    )
+                    comps["v1"] = round(confidence, 2)
+                    candidate.confidence_v2 = v2
+                    candidate.score_components_v2 = json.dumps(comps)
+                    if config.SCORING_V2_ACTIVE:
+                        confidence = v2
                 candidate.confidence = confidence
                 candidate.tier = tier_for(confidence)
 

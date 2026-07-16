@@ -334,6 +334,14 @@ OUTCOME_RESOLUTION_TF: str = _safe_str("INDIA_OUTCOME_RESOLUTION_TF", "1m")
 # label froze all session, misdirecting the chop/regime-setup gates on days
 # that developed a trend after the open). 0 (default) = legacy frozen label.
 DAILY_REGIME_REFRESH_MIN: int = _safe_int("INDIA_DAILY_REGIME_REFRESH_MIN", 0)
+# Scoring v2 (Session 21). SHADOW computes + persists confidence_v2 and its
+# component breakdown on every emitted signal (pure measurement). ACTIVE
+# switches the confidence that feeds the floor gate, tiering, and subscriber
+# delivery to v2 — OWNER SIGN-OFF, flipped only after ≥10 forward sessions
+# show v2 buckets monotonic (higher score ⇒ better realised EV) while v1's
+# stay inverted. Rollback = flip ACTIVE off; v1 is always still computed.
+SCORING_V2_SHADOW: bool = _safe_bool("INDIA_SCORING_V2_SHADOW", True)
+SCORING_V2_ACTIVE: bool = _safe_bool("INDIA_SCORING_V2_ACTIVE", False)
 
 # Minimum viable TP1 distance for stock bases, % of entry (IB11 equivalent).
 MIN_SCALP_PCT: float = _safe_float("INDIA_MIN_SCALP_PCT", 0.10)
