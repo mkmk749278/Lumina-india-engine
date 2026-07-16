@@ -1,6 +1,99 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-13 (Session 20 — India Market Doctrine + Phase-1 market-context backbone: per-scan MarketContext stamped on every signal; the autonomous regime-adaptive portfolio program begins)
+**Last updated:** 2026-07-16 (Session 21 — outcome-ledger truth program: entry-trigger fills, 1m resolution, TP2 anchor, truth telemetry, scoring v2 + direction v2 in shadow, allocator arming dark. Branch `claude/stock-signal-quality-audit-9hzz0y`, engine + ops.)
+
+---
+
+## Session 21 (2026-07-16) — Signal-Quality Audit + Ledger-Truth Program
+
+**Trigger:** owner uploaded the 5-session live artifacts (334 resolved,
+28.4% win, +4.93% gross, **−0.045%/trade after the 0.06% cost model**) and
+asked for a full audit — with the constraint that *disabling paths or
+cutting volume ≠ good signals*.
+
+**Audit verdict (data + code):**
+1. **The ledger itself was distorted** — every conclusion downstream of it
+   (edge matrix, allocator verdicts, edge-nudge) inherited the distortion:
+   - ORB/VSB/BDS print resting-LEVEL entries better than market at emit;
+     the monitor assumed instant fills → VSB's 50% "best setup" win rate
+     partly fictitious (B1).
+   - Outcomes resolved on 5m candles with a conservative same-candle
+     SL+TP tie → SL_HIT; median SL (~0.20%) fits inside one 5m bar →
+     191 SL_HITs partly resolution artifact (B2).
+   - `_derive_tp2` pinned mapped TP2s to the band bottom; TP1_HIT is a
+     legacy single-target status crediting 100% at TP1 → outcome cohorts
+     not comparable (B3).
+2. **Confidence is anti-predictive by construction** (55-60 conf → 33.8%
+   win; 75+ → 19.4%; tier A −5.29% net vs tier B +8.93%): regime 15 + HTF
+   12 + BOS 7 + index 5 = up to 39/100 all restating "trend fully
+   established" — the late/exhausted condition. TPE collected 68/161 A
+   tiers with negative EV.
+3. **Direction is lagging beta**: rising week LONG 38%/SHORT 12%; falling
+   week the exact mirror. The v1 bias latches after the move is mature and
+   the direction gate then forces entries into exhaustion
+   (LONG_BIASED/LONG cohort: 6.2% win). FII/DII vote was unwired.
+4. **Geometry is sub-cost**: median TP1 0.45% / SL 0.20% vs 0.06% cost;
+   gross avg +0.015%/trade. Churn, not edge. (Geometry floors deliberately
+   NOT changed this session — they get re-set on the corrected ledger.)
+5. "numpy errors" — red herring: zero numpy/pandas in engine+ops; broker
+   SDKs log those. Real bug found instead: unguarded `next()` in
+   DivergenceContinuation, swallowed by the scanner's blanket except (B5).
+
+**Shipped (engine, 9 commits on the branch):**
+- **Truth track (ACTIVE by default — measurement, not strategy):**
+  entry-trigger state machine (LEVEL entries fill only when price trades
+  through entry; `NOT_TRIGGERED` outcome excluded from all win/EV
+  denominators; `INDIA_ENTRY_TRIGGER_ENABLED=true`), 1m outcome
+  resolution with per-signal 5m fallback
+  (`INDIA_OUTCOME_RESOLUTION_TF=1m`; new 1m ring in the tick store),
+  TP2 target-anchored selection (`INDIA_TP2_SELECT_MODE=target_anchored`),
+  MFE/MAE + bars-to-resolve + resolving-TF + ambiguous-tie persisted per
+  outcome, extension-at-entry (VWAP/EMA21, ATRs) + bias-age + dup-ordinal
+  stamped per signal, edge matrix rebuilt (NT excluded, net-win%, legacy
+  segregation, extension/dup dimensions, pre-migration rows excluded from
+  context cohorts instead of the "?" pollution).
+- **Shadow (measured, nothing gates on them):** scoring v2
+  (`confidence_v2` + component JSON; one trend read ≤15, extension
+  penalty 0..−10, phase affinity ≤8, freshness ≤7; v1 still drives
+  tiers/delivery) and direction v2 (`market_direction_v2`/`index_bias_v2`;
+  VWAP/EMA/day-change majority vote, live from the first bar).
+- **Dark / default-OFF (owner sign-off to arm):** phase-affinity blocklist
+  gate, duplicate entry-move gate, **allocator SUPPRESS arming**
+  (`INDIA_ALLOCATOR_ARMED=false` — would-suppress decisions are dark-
+  logged every session; verdicts re-derived at each open, self-reversing).
+- **Hygiene:** DivergenceContinuation StopIteration guards; per-evaluator
+  error counters + FII/DII macro snapshot in `/api/pulse`; spread-gate
+  stub deleted (no bid/ask in the lite tick — no stubs); NSE
+  `fiidiiTradeReact` list-shape parser (point `INDIA_FII_DII_URL` at the
+  NSE report or an adapter); optional intraday daily-regime refresh
+  (`INDIA_DAILY_REGIME_REFRESH_MIN`, default 0 = frozen legacy).
+- **Replay harness:** `tools/replay.py` (re-resolves the stored ledger
+  under any rule set using the SAME `walk_signal` as production; candle
+  CSV cache + `--fetch` via Fyers REST) and `tools/replay_gates.py`
+  (kept-vs-cut cohort EV for any candidate gate spec). Parity pinned by
+  tests. **Run on the VPS** (needs the prod DB + a Fyers token for the
+  first candle fetch):
+  `python -m tools.replay --db data/india_db.sqlite3 --candles ./candle_cache --fetch --resolution 1 --entry-trigger on --out replay_report.csv`
+- **Ops:** Outcomes (NT/ambiguous counts, MFE/MAE, resolving TF), Edge
+  (net-win%, NT/legacy, extension + dup dimensions, exclusion counts),
+  Quality (NT column), Pulse (evaluator errors, macro snapshot).
+
+**Tests:** engine 553 (was 504) + ops 24, ruff + mypy clean.
+
+**What the next sessions do (in order):**
+1. First live session on the corrected ledger: watch NT rate per setup,
+   ambiguous-tie rate (should collapse vs the 5m era), VSB's honest win
+   rate. Run the replay harness on the VPS for the historical comparison.
+2. Let ≥5 forward sessions accrue → judge direction v2 vs v1 (the
+   LONG_BIASED/LONG death cohort must shrink) → owner sign-off to feed
+   the direction gate from v2.
+3. ≥10 forward sessions → scoring-v2 calibration check (v2 buckets must
+   be monotonic where v1's inverted) → owner sign-off
+   `INDIA_SCORING_V2_ACTIVE` + tier recalibration.
+4. Watch the dark allocator would-suppress log track outcomes → owner
+   sign-off `INDIA_ALLOCATOR_ARMED=true`.
+5. Re-set geometry floors (MIN_SCALP_COST_MULT etc.) on the corrected
+   ledger's MFE/MAE distributions — NOT before.
 
 ---
 
