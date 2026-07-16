@@ -27,6 +27,21 @@ class Direction:
     SHORT = "SHORT"
 
 
+class EntryType:
+    """How the printed entry price relates to the market at emission.
+
+    MARKET — entry is the last traded price; the trade starts immediately.
+    LEVEL  — entry is a resting breakout/retest level (ORB, VSB, BDS); the
+             trade only exists once price actually trades through it. The
+             outcome monitor's entry-trigger state machine keys off this —
+             before it existed, breakout outcomes were scored off fills
+             nobody could have had.
+    """
+
+    MARKET = "MARKET"
+    LEVEL = "LEVEL"
+
+
 class SetupClass:
     """Evaluator identity. Values are coupled to scoring + telemetry keys."""
 
@@ -145,10 +160,39 @@ class IndiaSignal:
     # runs the legacy single-target plan for this signal.
     tp2: float = 0.0
 
+    # MARKET (fill at emission) or LEVEL (fill only when price trades through
+    # entry) — see EntryType. Set by the evaluator that owns the geometry.
+    entry_type: str = EntryType.MARKET
+
+    # ── Truth telemetry (Session 21) — stamped at emission ─────────────
+    # Signed distance of entry from session VWAP / EMA21-5m, in ATRs
+    # (positive = extended in the signal's direction). The exhaustion
+    # dimension the edge matrix slices on. 0.0 = reference unavailable.
+    extension_vwap_atr: float = 0.0
+    extension_ema21_atr: float = 0.0
+    # Minutes since the whole-market direction label last changed at emission
+    # (-1 = unknown / tracker not warm). Freshness: a bias that latched 5
+    # minutes ago is a different trade from one 3 hours old.
+    bias_age_min: float = -1.0
+    # 1-based count of same (base, direction) emissions today including this
+    # one — the duplicate-churn dimension.
+    dup_index: int = 0
+
     # Filled after scoring / routing.
     confidence: float = 0.0
     tier: str = Tier.FILTERED
     suppression_reason: str = ""
+
+    # ── Shadow measurements (Session 21) — persisted alongside the live
+    # values so forward sessions can judge v2 against v1 before any flip.
+    # confidence_v2 / components: the rebuilt scoring model (signal_quality
+    # score_v2); tiers keep coming from v1 until INDIA_SCORING_V2_ACTIVE.
+    confidence_v2: float = 0.0
+    score_components_v2: str = ""
+    # market_direction_v2 / index_bias_v2: the de-lagged direction classifier
+    # (dependency.market_bias_v2), measured in shadow.
+    market_direction_v2: str = ""
+    index_bias_v2: str = ""
 
 
 @dataclass

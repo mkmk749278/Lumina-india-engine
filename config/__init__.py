@@ -300,6 +300,36 @@ TP1_EXIT_FRACTION: float = _safe_float("INDIA_TP1_EXIT_FRACTION", 0.5)
 # "scratch" runner nets ~0 after STT instead of a hidden loss; False = entry.
 BE_COST_BUFFER: bool = _safe_bool("INDIA_BE_COST_BUFFER", True)
 
+# How the mapped-structural-level TP2 is picked inside the band:
+#   "nearest"         — legacy: level nearest the ENTRY (pins TP2 to the band
+#                       bottom, ~1.5x TP1 dist; live ledger showed TP2_HIT
+#                       paying LESS than a marked-to-close TP1_EXPIRED)
+#   "target_anchored" — level nearest the R-multiple anchor
+#                       (entry + TP2_DIST_MULT x TP1 distance), so a mapped
+#                       TP2 stays a genuine stretch target
+TP2_SELECT_MODE: str = _safe_str("INDIA_TP2_SELECT_MODE", "target_anchored")
+
+# --- outcome-ledger truth (Session 21) --------------------------------------
+# Entry-trigger state machine: signals whose printed entry is a resting LEVEL
+# (ORB / VSB / BDS breakout entries) only start their SL/TP race once a candle
+# actually trades through the entry. Before this, the monitor assumed every
+# signal filled at its printed entry at emission — for breakout setups that
+# entry is systematically better than market, so the ledger credited fills
+# nobody could have had. Signals whose level is never touched resolve
+# NOT_TRIGGERED (excluded from win/EV denominators — no fill, no trade).
+ENTRY_TRIGGER_ENABLED: bool = _safe_bool("INDIA_ENTRY_TRIGGER_ENABLED", True)
+# A LEVEL entry left untouched this many minutes after emission is cancelled
+# (NOT_TRIGGERED) — a breakout retest that hasn't come in half an hour is a
+# different market, not a pending fill.
+ENTRY_TRIGGER_EXPIRY_MIN: int = _safe_int("INDIA_ENTRY_TRIGGER_EXPIRY_MIN", 30)
+# Timeframe the outcome monitor walks ("1m" or "5m"). Median SL distance in
+# the live window (~0.20%) fits INSIDE one 5m bar's range, so the 5m walk's
+# same-candle SL+TP tie (conservative → SL) was manufacturing SL_HITs. 1m
+# collapses the tie population; the monitor falls back to 5m per signal when
+# 1m coverage doesn't reach back to its registration (e.g. mid-session
+# restart — the 1m buffer builds from live ticks only).
+OUTCOME_RESOLUTION_TF: str = _safe_str("INDIA_OUTCOME_RESOLUTION_TF", "1m")
+
 # Minimum viable TP1 distance for stock bases, % of entry (IB11 equivalent).
 MIN_SCALP_PCT: float = _safe_float("INDIA_MIN_SCALP_PCT", 0.10)
 

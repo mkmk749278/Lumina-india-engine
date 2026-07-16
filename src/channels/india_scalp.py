@@ -20,7 +20,13 @@ from src.patterns import (
     is_bullish_rejection,
 )
 from src.regime import Regime
-from src.signals.model import Direction, IndiaContext, IndiaSignal, SetupClass
+from src.signals.model import (
+    Direction,
+    EntryType,
+    IndiaContext,
+    IndiaSignal,
+    SetupClass,
+)
 from src.structure_state import last_swing_high, last_swing_low
 
 
@@ -71,9 +77,18 @@ def _derive_tp2(ctx: IndiaContext, entry: float, tp1: float, direction: str) -> 
         for lvl in levels
         if lvl > 0 and lo <= sign * (lvl - entry) <= hi
     ]
+    anchor = entry + sign * tp1_dist * config.TP2_DIST_MULT
     if mapped:
-        return min(mapped, key=lambda lvl: abs(lvl - entry))
-    return entry + sign * tp1_dist * config.TP2_DIST_MULT
+        if config.TP2_SELECT_MODE == "nearest":
+            # Legacy: level nearest the entry. Systematically pinned TP2 to
+            # the band bottom (~1.5x TP1 dist) — the live ledger showed
+            # TP2_HIT paying LESS than a marked-to-close TP1_EXPIRED.
+            return min(mapped, key=lambda lvl: abs(lvl - entry))
+        # target_anchored (default): level nearest the R-multiple anchor, so
+        # a mapped TP2 stays a genuine stretch target instead of collapsing
+        # to "barely past TP1".
+        return min(mapped, key=lambda lvl: abs(lvl - anchor))
+    return anchor
 
 
 def _near_key_level(ctx: IndiaContext, price: float) -> str | None:
@@ -277,6 +292,7 @@ def _make_signal(
     htf: bool,
     vol_ratio: float,
     reason: str,
+    entry_type: str = EntryType.MARKET,
 ) -> IndiaSignal:
     return IndiaSignal(
         signal_id=str(uuid.uuid4()),
@@ -300,6 +316,7 @@ def _make_signal(
         pcr_at_entry=ctx.pcr,
         tp2=_derive_tp2(ctx, entry, tp1, direction),
         setup_reason=reason,
+        entry_type=entry_type,
     )
 
 
@@ -386,6 +403,10 @@ class OpeningRangeBreakout(Evaluator):
             htf=_trend_matches(direction, ctx.regime_60m),
             vol_ratio=vol_ratio,
             reason="opening-range breakout",
+            # Entry is the OR boundary + buffer — a resting level, not the
+            # last price. The outcome monitor only starts this trade once
+            # price actually trades through it.
+            entry_type=EntryType.LEVEL,
         )
 
 
@@ -453,6 +474,11 @@ def _volume_breakout(
         htf=_trend_matches(direction, ctx.regime_60m),
         vol_ratio=vol_ratio,
         reason=reason,
+        # Entry is the swing level ± buffer — a resting level, not the last
+        # price. The outcome monitor only starts this trade once price
+        # actually trades through it (before Session 21 these outcomes were
+        # scored off a fill systematically better than the market at emit).
+        entry_type=EntryType.LEVEL,
     )
 
 

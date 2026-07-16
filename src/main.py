@@ -49,12 +49,30 @@ from src.signal_store import (
     init_tables,
     insert_outcome,
     mark_tp1_touched,
+    mark_triggered,
     write_session_summary,
 )
-from src.trade_monitor import IndiaTradeMonitor
+from src.trade_monitor import IndiaTradeMonitor, SignalOutcome
 from src.utils import get_logger
 
 logger = get_logger("main")
+
+
+async def _persist_outcome(oc: SignalOutcome) -> None:
+    """One write path for every resolved outcome (walk telemetry included)."""
+    await insert_outcome(
+        oc.signal_id,
+        oc.outcome,
+        oc.exit_price,
+        oc.points,
+        oc.pct,
+        oc.resolved_at,
+        mfe_pct=oc.mfe_pct,
+        mae_pct=oc.mae_pct,
+        bars_to_resolve=oc.bars_to_resolve,
+        resolution_tf=oc.resolution_tf,
+        ambiguous_tie=oc.ambiguous_tie,
+    )
 
 _HEARTBEAT_PATH = Path("/tmp/india_engine_heartbeat")
 _API_PORT: int = int(os.environ.get("API_PORT", "8000"))
@@ -309,25 +327,13 @@ async def _run() -> None:
                     # Resolve any TP/SL touch that landed during CLOSING
                     # before scoring the remainder as EXPIRED.
                     for oc in monitor.check(now):
-                        await insert_outcome(
-                            oc.signal_id,
-                            oc.outcome,
-                            oc.exit_price,
-                            oc.points,
-                            oc.pct,
-                            oc.resolved_at,
-                        )
+                        await _persist_outcome(oc)
+                    for sid, triggered_at in monitor.drain_trigger_marks():
+                        await mark_triggered(sid, triggered_at)
                     for sid, touched_at in monitor.drain_tp1_marks():
                         await mark_tp1_touched(sid, touched_at)
                     for oc in monitor.force_close_all(now):
-                        await insert_outcome(
-                            oc.signal_id,
-                            oc.outcome,
-                            oc.exit_price,
-                            oc.points,
-                            oc.pct,
-                            oc.resolved_at,
-                        )
+                        await _persist_outcome(oc)
                     summary = await write_session_summary()
                     logger.info(
                         "session summary written: {} signals, "
@@ -371,16 +377,11 @@ async def _run() -> None:
                 or config.INDIA_DEV_MODE
             ):
                 for oc in monitor.check(now):
-                    await insert_outcome(
-                        oc.signal_id,
-                        oc.outcome,
-                        oc.exit_price,
-                        oc.points,
-                        oc.pct,
-                        oc.resolved_at,
-                    )
-                # Persist runner armings (two-target plan) so a banked TP1
-                # survives an engine restart instead of re-racing SL vs TP1.
+                    await _persist_outcome(oc)
+                # Persist entry triggers + runner armings so a fill and a
+                # banked TP1 both survive an engine restart.
+                for sid, triggered_at in monitor.drain_trigger_marks():
+                    await mark_triggered(sid, triggered_at)
                 for sid, touched_at in monitor.drain_tp1_marks():
                     await mark_tp1_touched(sid, touched_at)
 

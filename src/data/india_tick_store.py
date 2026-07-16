@@ -28,7 +28,17 @@ from src.market.candle import Candle, volumes
 
 _OR_END = time(9, 45)
 
-_TF_MINUTES = {"5m": 5, "15m": 15, "60m": 60}
+# 1m exists for OUTCOME RESOLUTION only (Session 21): the live window's median
+# SL distance (~0.20%) fits inside one 5m bar's range, so walking outcomes on
+# 5m manufactured SL_HITs via the conservative same-candle tie. 1m is built
+# from live ticks like every other timeframe but is never seeded (the REST
+# seed carries no 1m) and no evaluator reads it.
+_TF_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "60m": 60}
+
+# Per-timeframe ring depth. A full NSE session is 375 minutes — 480 keeps the
+# whole day of 1m bars (the monitor walks from each signal's registration).
+# The other timeframes keep the historical default depth.
+_TF_MAXLEN = {"1m": 480}
 
 
 def _bar_open_time(ts: datetime, tf_minutes: int) -> datetime:
@@ -109,7 +119,8 @@ class IndiaTickStore:
     def _ensure_symbol(self, symbol: str) -> None:
         if symbol not in self._candles:
             self._candles[symbol] = {
-                tf: deque(maxlen=self._max) for tf in _TF_MINUTES
+                tf: deque(maxlen=_TF_MAXLEN.get(tf, self._max))
+                for tf in _TF_MINUTES
             }
             self._building[symbol] = {tf: None for tf in _TF_MINUTES}
 
