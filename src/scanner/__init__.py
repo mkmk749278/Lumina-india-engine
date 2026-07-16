@@ -83,13 +83,24 @@ from src.channels import (
     VolumeSurgeBreakout,
 )
 from src.data.india_context_builder import IndiaContextBuilder
-from src.market_context import MarketContext, MarketDirection
+from src.market_context import (
+    MarketContext,
+    MarketDirection,
+    classify_session_phase,
+)
 from src.regime import Regime
 from src.session.event_calendar import EventCalendar
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
 from src.signal_quality import IndiaSignalScoringEngine, tier_for
-from src.signals.model import Direction, IndiaContext, IndiaSignal, is_trend_family
+from src.signals.model import (
+    SETUP_FAMILY,
+    Direction,
+    IndiaContext,
+    IndiaSignal,
+    SetupFamily,
+    is_trend_family,
+)
 from src.signals.model import Tier as Tier
 from src.utils import get_logger
 
@@ -218,6 +229,22 @@ _TP_FEASIBILITY_EFFICIENCY: float = config._safe_float(
 )
 
 
+def _parse_phase_blocklist(raw: str) -> frozenset[tuple[str, str]]:
+    """CSV of FAMILY:PHASE pairs -> {(family, phase)}. Malformed entries are
+    skipped (an unparseable blocklist must fail open, not suppress)."""
+    pairs: set[tuple[str, str]] = set()
+    for entry in raw.split(","):
+        family, sep, phase = entry.strip().partition(":")
+        if sep and family.strip() and phase.strip():
+            pairs.add((family.strip().upper(), phase.strip().upper()))
+    return frozenset(pairs)
+
+
+_PHASE_BLOCKLIST: frozenset[tuple[str, str]] = _parse_phase_blocklist(
+    config.PHASE_BLOCKLIST
+)
+
+
 # ── Gate result ──────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -249,6 +276,14 @@ class GateChain:
         self._group_dir_this_scan: Counter[tuple[str, str]] = Counter()
         # (setup class, direction) -> emissions this scan (setup flood cap).
         self._setup_dir_this_scan: Counter[tuple[str, str]] = Counter()
+        # (base, direction) -> entry of the latest emission (duplicate
+        # entry-move policy: a re-fire must print genuinely new structure).
+        self._last_entry: dict[tuple[str, str], float] = {}
+        # "SETUP/DIRECTION" cohorts the allocator marks SUPPRESS, loaded at
+        # session open. Acted on only when INDIA_ALLOCATOR_ARMED; otherwise
+        # every would-suppress is dark-logged so the owner can watch the
+        # verdicts track outcomes before arming (owner sign-off).
+        self._allocator_suppress: frozenset[str] = frozenset()
 
     def begin_scan(self) -> None:
         """Reset the per-scan counters. Called once per scan."""
@@ -284,6 +319,9 @@ class GateChain:
             last = self._last_base_emission.get(base)
             if last is None or last[1] < ts:
                 self._last_base_emission[base] = (direction, ts)
+                entry = float(row.get("entry", 0) or 0)
+                if entry > 0:
+                    self._last_entry[(base, direction)] = entry
         if rows:
             logger.info(
                 "gate chain rehydrated: {} emissions already today", len(rows)
@@ -341,6 +379,7 @@ class GateChain:
             self._chop_gate,
             self._regime_setup_gate,
             self._tp_feasibility_gate,
+            self._phase_affinity_gate,
         ):
             reason = gate_fn(signal, ctx, session_state, now)
             if reason is not None:
@@ -450,6 +489,48 @@ class GateChain:
                 ctx,
                 now,
             )
+        # Duplicate entry-move policy (default OFF): a same-(base, direction)
+        # re-fire whose entry sits within k×ATR of the previous emission's
+        # entry is the same idea echoing, not new structure.
+        if config.DUP_MIN_ENTRY_MOVE_ATR > 0 and ctx.atr14_5m > 0:
+            prev_entry = self._last_entry.get((ctx.base, signal.direction))
+            if prev_entry is not None:
+                moved = abs(signal.entry - prev_entry)
+                floor = ctx.atr14_5m * config.DUP_MIN_ENTRY_MOVE_ATR
+                if moved < floor:
+                    return self._suppress(
+                        "duplicate_entry_gate",
+                        f"entry {signal.entry:.1f} only {moved:.1f} pts from"
+                        f" the previous {signal.direction} emission on"
+                        f" {ctx.base} ({prev_entry:.1f}) — needs ≥{floor:.1f}"
+                        f" ({config.DUP_MIN_ENTRY_MOVE_ATR}x ATR) of new"
+                        " structure",
+                        signal,
+                        ctx,
+                        now,
+                    )
+        # Allocator SUPPRESS (owner sign-off to arm): cohorts with n ≥
+        # min-sample and expectancy ≤ the suppress threshold, re-derived
+        # from the ledger at each session open (self-reversing). HOLD and
+        # INSUFFICIENT_DATA never reach this set.
+        cohort = f"{signal.setup_class}/{signal.direction}"
+        if cohort in self._allocator_suppress:
+            if config.ALLOCATOR_ARMED:
+                return self._suppress(
+                    "allocator_suppress_gate",
+                    f"{cohort} is a measured-negative cohort"
+                    " (allocator SUPPRESS, re-derived daily)",
+                    signal,
+                    ctx,
+                    now,
+                )
+            logger.info(
+                "allocator would-suppress (dark, not armed): {} on {}"
+                " conf={:.0f}",
+                cohort,
+                ctx.base,
+                signal.confidence,
+            )
         return None
 
     def emitted_count(self, base: str, direction: str) -> int:
@@ -458,7 +539,12 @@ class GateChain:
         return self._emitted_today[(base, direction)]
 
     def record_emission(
-        self, setup_class: str, base: str, direction: str, now: datetime
+        self,
+        setup_class: str,
+        base: str,
+        direction: str,
+        now: datetime,
+        entry: float = 0.0,
     ) -> None:
         key = f"{setup_class}:{base}"
         self._last_fire[key] = now
@@ -467,6 +553,19 @@ class GateChain:
         self._last_base_emission[base] = (direction, now)
         self._group_dir_this_scan[(dependency.group_for(base), direction)] += 1
         self._setup_dir_this_scan[(setup_class, direction)] += 1
+        if entry > 0:
+            self._last_entry[(base, direction)] = entry
+
+    def set_allocator_suppress(self, cohorts: frozenset[str]) -> None:
+        """Install the session's allocator SUPPRESS cohort set (loaded once
+        at session open from the ledger — never per scan)."""
+        self._allocator_suppress = cohorts
+        if cohorts:
+            logger.info(
+                "allocator suppress set loaded ({}): {}",
+                "ARMED" if config.ALLOCATOR_ARMED else "dark",
+                sorted(cohorts),
+            )
 
     def reset_day(self) -> None:
         self._last_fire.clear()
@@ -476,6 +575,7 @@ class GateChain:
         self._last_base_emission.clear()
         self._group_dir_this_scan.clear()
         self._setup_dir_this_scan.clear()
+        self._last_entry.clear()
 
     @property
     def suppressions(self) -> list[Suppression]:
@@ -830,6 +930,29 @@ class GateChain:
         return None
 
     @staticmethod
+    def _phase_affinity_gate(
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        session_state: SessionState,
+        now: datetime,
+    ) -> str | None:
+        """Doctrine §3 ∧ measured evidence: suppress a setup FAMILY in a
+        session PHASE only when the pair is on the owner-approved blocklist
+        (INDIA_PHASE_BLOCKLIST — populated from edge-matrix cohorts with
+        n ≥ min-sample AND negative net EV, never assumption alone).
+        Default OFF and empty — a targeted blocklist, not a time curfew."""
+        if not config.PHASE_GATE_ENABLED or not _PHASE_BLOCKLIST:
+            return None
+        family = SETUP_FAMILY.get(signal.setup_class, SetupFamily.NEUTRAL)
+        phase = classify_session_phase(ctx.scan_time_ist)
+        if (family, phase) in _PHASE_BLOCKLIST:
+            return (
+                f"{family} setups blocked in {phase}"
+                f" (phase-affinity blocklist, measured-negative cohort)"
+            )
+        return None
+
+    @staticmethod
     def _confidence_floor_gate(
         confidence: float, is_expiry_day: bool = False
     ) -> str | None:
@@ -920,6 +1043,10 @@ class IndiaScanner:
         """Install the session's measured-edge lookup into the scorer (loaded
         once at session open — see main.py)."""
         self._scorer.set_edge_index(index)
+
+    def set_allocator_suppress(self, cohorts: frozenset[str]) -> None:
+        """Install the session's allocator SUPPRESS set (see GateChain)."""
+        self._gates.set_allocator_suppress(cohorts)
 
     def scan(
         self,
@@ -1130,7 +1257,11 @@ class IndiaScanner:
             )
 
             self._gates.record_emission(
-                candidate.setup_class, ctx.base, candidate.direction, now
+                candidate.setup_class,
+                ctx.base,
+                candidate.direction,
+                now,
+                entry=candidate.entry,
             )
             emitted.append(candidate)
 

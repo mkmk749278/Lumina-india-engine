@@ -666,7 +666,7 @@ async def get_signals_today_for_gates() -> list[dict]:
     db = await get_db()
     cursor = await db.execute(
         """
-        SELECT setup_class, base, direction,
+        SELECT setup_class, base, direction, entry,
                (strftime('%s', 'now', 'localtime') - strftime('%s', created_at))
                    AS age_sec
         FROM india_signals

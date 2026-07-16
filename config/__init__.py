@@ -343,6 +343,27 @@ DAILY_REGIME_REFRESH_MIN: int = _safe_int("INDIA_DAILY_REGIME_REFRESH_MIN", 0)
 SCORING_V2_SHADOW: bool = _safe_bool("INDIA_SCORING_V2_SHADOW", True)
 SCORING_V2_ACTIVE: bool = _safe_bool("INDIA_SCORING_V2_ACTIVE", False)
 
+# --- emission discipline (Session 21 — ALL default OFF / inert) -------------
+# Phase-affinity gate: suppress setup-FAMILY x session-PHASE pairs that are
+# BOTH doctrine-contraindicated (§3) AND measured-negative in the edge matrix
+# with n ≥ ALLOCATOR_MIN_SAMPLE. CSV of FAMILY:PHASE pairs, e.g.
+# "TREND:POWER_HOUR,BREAKOUT:MIDDAY_CHOP". OWNER SIGN-OFF to populate/enable —
+# doctrine proposes, the ledger confirms, never a blanket time cut (the 07-13
+# replay showed midday BREAKOUTS were the best cohort).
+PHASE_GATE_ENABLED: bool = _safe_bool("INDIA_PHASE_AFFINITY_GATE_ENABLED", False)
+PHASE_BLOCKLIST: str = _safe_str("INDIA_PHASE_BLOCKLIST", "")
+# Duplicate policy: a same (base, direction) re-fire must print an entry at
+# least this many ATRs away from the previous emission's entry — a re-fire on
+# the same bar cluster is an echo, not new structure. 0.0 = off.
+DUP_MIN_ENTRY_MOVE_ATR: float = _safe_float("INDIA_DUP_MIN_ENTRY_MOVE_ATR", 0.0)
+# Allocator arming: when true, (setup, direction) cohorts the allocator marks
+# SUPPRESS (n ≥ min-sample AND ev ≤ suppress threshold — never HOLD, never
+# INSUFFICIENT_DATA) are suppressed at emission. Self-reversing: verdicts are
+# re-derived from the ledger at every session open, so a cohort that heals
+# re-enables itself. OWNER SIGN-OFF; while false the engine dark-logs every
+# would-suppress so the owner can watch the verdicts track outcomes first.
+ALLOCATOR_ARMED: bool = _safe_bool("INDIA_ALLOCATOR_ARMED", False)
+
 # Minimum viable TP1 distance for stock bases, % of entry (IB11 equivalent).
 MIN_SCALP_PCT: float = _safe_float("INDIA_MIN_SCALP_PCT", 0.10)
 

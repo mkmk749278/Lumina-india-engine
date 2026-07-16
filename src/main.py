@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 import config
-from src import owner_alerts, strategy_edge
+from src import owner_alerts, strategy_allocator, strategy_edge
 from src.api.server import (
     build_app,
     serve_api,
@@ -302,6 +302,25 @@ async def _run() -> None:
                         scanner.set_edge_index(await strategy_edge.get_edge_index())
                     except Exception:
                         logger.opt(exception=True).warning("edge index load failed")
+                    # Load the allocator verdicts once per open. Only SUPPRESS
+                    # cohorts (n ≥ min-sample AND ev ≤ threshold) enter the
+                    # set — HOLD/INSUFFICIENT_DATA never act. Dark-logged
+                    # unless INDIA_ALLOCATOR_ARMED (owner sign-off).
+                    try:
+                        allocation = await strategy_allocator.get_allocation()
+                        recs = allocation.get("allocation", {}).get(
+                            "recommendations", {}
+                        )
+                        suppress = frozenset(
+                            str(r["key"])
+                            for r in recs.get("by_setup_direction", [])
+                            if r.get("verdict") == "SUPPRESS"
+                        )
+                        scanner.set_allocator_suppress(suppress)
+                    except Exception:
+                        logger.opt(exception=True).warning(
+                            "allocator verdict load failed"
+                        )
                     if not feed_active[0]:
                         # The most likely daily failure: the Fyers token was
                         # never tapped this morning. Page the owner instead
