@@ -329,6 +329,11 @@ ENTRY_TRIGGER_EXPIRY_MIN: int = _safe_int("INDIA_ENTRY_TRIGGER_EXPIRY_MIN", 30)
 # 1m coverage doesn't reach back to its registration (e.g. mid-session
 # restart — the 1m buffer builds from live ticks only).
 OUTCOME_RESOLUTION_TF: str = _safe_str("INDIA_OUTCOME_RESOLUTION_TF", "1m")
+# Re-classify each symbol's daily regime intraday every N minutes, folding
+# today's RUNNING daily bar into the seeded series (B4 fix: the seed-time
+# label froze all session, misdirecting the chop/regime-setup gates on days
+# that developed a trend after the open). 0 (default) = legacy frozen label.
+DAILY_REGIME_REFRESH_MIN: int = _safe_int("INDIA_DAILY_REGIME_REFRESH_MIN", 0)
 
 # Minimum viable TP1 distance for stock bases, % of entry (IB11 equivalent).
 MIN_SCALP_PCT: float = _safe_float("INDIA_MIN_SCALP_PCT", 0.10)

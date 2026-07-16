@@ -163,6 +163,39 @@ def classify_market_direction(index_contexts: dict[str, IndiaContext]) -> str:
     return MarketDirection.NEUTRAL
 
 
+def classify_market_direction_v2(
+    index_contexts: dict[str, IndiaContext],
+) -> str:
+    """De-lagged composite direction (Session 21 — SHADOW only, stamped as
+    ``market_direction_v2`` on every signal; nothing gates on it).
+
+    Same vote set as v1 but with the de-lagged ``market_bias_v2`` intraday
+    votes, and a majority rule instead of zero-opposing: ≥2 aligned votes
+    and strictly more than the opposing count. v1's zero-opposing rule is
+    exactly why the label only latched after every read agreed — i.e. after
+    the move was done."""
+    votes: list[str] = []
+    for name in _DIRECTION_INDICES:
+        ctx = index_contexts.get(name)
+        if ctx is not None:
+            votes.append(dependency.market_bias_v2(ctx))
+    primary = index_contexts.get("NIFTY") or next(
+        iter(index_contexts.values()), None
+    )
+    if primary is not None:
+        votes.append(_daily_regime_vote(primary.regime_daily))
+        votes.append(_fii_dii_vote(primary.fii_dii_net_cr))
+        votes.append(_open_gap_vote(_open_gap_pct(primary)))
+
+    longs = votes.count(Direction.LONG)
+    shorts = votes.count(Direction.SHORT)
+    if longs >= 2 and longs > shorts:
+        return MarketDirection.LONG_BIASED
+    if shorts >= 2 and shorts > longs:
+        return MarketDirection.SHORT_BIASED
+    return MarketDirection.NEUTRAL
+
+
 def _leadership(index_contexts: dict[str, IndiaContext]) -> str:
     """Whichever of NIFTY / BANKNIFTY has moved more from its open leads;
     NEUTRAL when neither has a real day_open or the moves are tied."""
@@ -191,6 +224,9 @@ class MarketContext:
     is_expiry_day: bool
     fii_dii_net_cr: float
     open_gap_pct: float
+    # Shadow (Session 21): the de-lagged v2 label, measured alongside v1 on
+    # every signal so forward sessions can judge it before anything gates.
+    market_direction_v2: str = MarketDirection.NEUTRAL
 
     @classmethod
     def build(
@@ -221,4 +257,5 @@ class MarketContext:
             is_expiry_day=is_expiry,
             fii_dii_net_cr=fii_dii,
             open_gap_pct=round(gap, 3),
+            market_direction_v2=classify_market_direction_v2(index_contexts),
         )

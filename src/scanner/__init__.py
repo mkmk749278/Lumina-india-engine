@@ -958,6 +958,12 @@ class IndiaScanner:
             for base, ctx in contexts.items()
             if base in config.INDEX_BASES
         }
+        # Shadow v2 biases (Session 21) — stamped per signal, never gated on.
+        index_biases_v2 = {
+            base: dependency.market_bias_v2(ctx)
+            for base, ctx in contexts.items()
+            if base in config.INDEX_BASES
+        }
         for base, ctx in contexts.items():
             for proxy in dependency.proxy_candidates(base):
                 bias = index_biases.get(proxy)
@@ -1087,6 +1093,18 @@ class IndiaScanner:
             candidate.bias_age_min = round(bias_age_min, 1)
             candidate.dup_index = (
                 self._gates.emitted_count(ctx.base, candidate.direction) + 1
+            )
+            # Shadow direction v2 (never gated on until the forward window
+            # proves it beats v1): whole-market label + this base's proxy
+            # index bias under the de-lagged classifier.
+            candidate.market_direction_v2 = market_ctx.market_direction_v2
+            candidate.index_bias_v2 = next(
+                (
+                    index_biases_v2[p]
+                    for p in dependency.proxy_candidates(ctx.base)
+                    if p in index_biases_v2
+                ),
+                dependency.NEUTRAL,
             )
 
             self._gates.record_emission(

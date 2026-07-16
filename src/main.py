@@ -134,6 +134,7 @@ async def _run() -> None:
             expiry,
             on_prev_day=ctx_builder.set_prev_day,
             on_daily_regime=ctx_builder.set_daily_regime,
+            on_daily_candles=ctx_builder.set_daily_candles,
         )
         feed = fyers_feed
         client_id = os.environ.get("FYERS_CLIENT_ID", "")
@@ -261,6 +262,9 @@ async def _run() -> None:
     market_live_since: float | None = None
     last_feed_restart = float("-inf")
     consecutive_stall_restarts = 0
+    # Intraday daily-regime refresh clock (B4 fix — inert at the default
+    # INDIA_DAILY_REGIME_REFRESH_MIN=0).
+    last_regime_refresh = float("-inf")
 
     def _admin_state_reset() -> dict:
         """Ops Control panel hook: align in-memory state with a wiped DB —
@@ -355,6 +359,18 @@ async def _run() -> None:
 
             if state == SessionState.OPEN or config.INDIA_DEV_MODE:
                 symbols = feed.symbols if feed_active[0] else {}
+                # Optional intraday daily-regime refresh: fold today's
+                # running daily bar into each symbol's seeded series so a
+                # trend that develops after the open reaches the chop /
+                # regime-setup gates same-day. Zero I/O.
+                if (
+                    config.DAILY_REGIME_REFRESH_MIN > 0
+                    and time.monotonic() - last_regime_refresh
+                    >= config.DAILY_REGIME_REFRESH_MIN * 60
+                ):
+                    last_regime_refresh = time.monotonic()
+                    for sym in symbols.values():
+                        ctx_builder.refresh_daily_regime(sym, now)
                 signals = scanner.scan(symbols, now)
                 scan_count_ref[0] += 1
 
