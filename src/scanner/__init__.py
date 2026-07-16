@@ -452,6 +452,11 @@ class GateChain:
             )
         return None
 
+    def emitted_count(self, base: str, direction: str) -> int:
+        """How many (base, direction) emissions have happened today —
+        the duplicate ordinal the scanner stamps on each signal."""
+        return self._emitted_today[(base, direction)]
+
     def record_emission(
         self, setup_class: str, base: str, direction: str, now: datetime
     ) -> None:
@@ -844,6 +849,19 @@ class GateChain:
 
 # ── Scanner ──────────────────────────────────────────────────────────
 
+def _signed_extension(
+    entry: float, anchor: float, atr: float, direction: str
+) -> float:
+    """Signed distance of *entry* from *anchor* in ATRs — positive when the
+    entry sits beyond the anchor in the trade's direction (i.e. the trade is
+    chasing an extended move), negative when it enters on the cheap side.
+    0.0 when either reference is unavailable."""
+    if anchor <= 0 or atr <= 0 or entry <= 0:
+        return 0.0
+    raw = (entry - anchor) / atr
+    return round(raw if direction == Direction.LONG else -raw, 3)
+
+
 def _build_evaluators() -> list[Evaluator]:
     """Instantiate all 14 evaluators."""
     return [
@@ -881,6 +899,12 @@ class IndiaScanner:
         self._scorer = IndiaSignalScoringEngine()
         self._gates = GateChain()
         self._scan_count = 0
+        # Whole-market direction transition tracker (Session 21): when the
+        # label last changed, so each emitted signal can carry its bias age
+        # (a bias that latched 5 minutes ago is a different trade from one
+        # 3 hours old). Reset with the day.
+        self._md_label: str | None = None
+        self._md_since: datetime | None = None
 
     @property
     def gates(self) -> GateChain:
@@ -945,6 +969,14 @@ class IndiaScanner:
         # onto every signal below so outcomes can be sliced by tape regime.
         market_ctx = MarketContext.build(
             {b: c for b, c in contexts.items() if b in config.INDEX_BASES}, now
+        )
+        if market_ctx.market_direction != self._md_label:
+            self._md_label = market_ctx.market_direction
+            self._md_since = now
+        bias_age_min = (
+            (now - self._md_since).total_seconds() / 60.0
+            if self._md_since is not None
+            else -1.0
         )
         for ctx in contexts.values():
             ctx.market_direction = market_ctx.market_direction
@@ -1034,6 +1066,23 @@ class IndiaScanner:
             candidate.vix_regime = market_ctx.vix_regime
             candidate.expiry_date = self._expiry.get_contract_expiry_date(now)
             candidate.days_to_expiry = self._expiry.days_to_expiry(now)
+            # Truth telemetry (Session 21): signed extension of entry from
+            # the session anchors (in ATRs, positive = extended in the
+            # signal's direction), bias freshness, duplicate ordinal. These
+            # are the exhaustion/churn dimensions the edge matrix slices —
+            # measured first, gated later only with evidence.
+            candidate.extension_vwap_atr = _signed_extension(
+                candidate.entry, ctx.session_vwap, ctx.atr14_5m,
+                candidate.direction,
+            )
+            candidate.extension_ema21_atr = _signed_extension(
+                candidate.entry, ctx.ema21_5m, ctx.atr14_5m,
+                candidate.direction,
+            )
+            candidate.bias_age_min = round(bias_age_min, 1)
+            candidate.dup_index = (
+                self._gates.emitted_count(ctx.base, candidate.direction) + 1
+            )
 
             self._gates.record_emission(
                 candidate.setup_class, ctx.base, candidate.direction, now
@@ -1054,3 +1103,5 @@ class IndiaScanner:
     def reset_day(self) -> None:
         self._gates.reset_day()
         self._scan_count = 0
+        self._md_label = None
+        self._md_since = None

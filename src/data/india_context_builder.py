@@ -14,6 +14,7 @@ from src.data.india_macro_store import IndiaMacroStore
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
+from src.indicators import ema
 from src.market_profile import tod_adjusted_volume_ratio
 from src.regime import Regime, classify
 from src.session.expiry_manager import ExpiryManager
@@ -114,6 +115,15 @@ class IndiaContextBuilder:
         if session_vwap > 0:
             extra_levels.append(session_vwap)
 
+        # EMA21 on 5m closes — the second extension anchor (0.0 until 21
+        # bars exist). Pure in-memory arithmetic, no I/O.
+        ema21_5m = 0.0
+        if len(candles_5m) >= 21:
+            try:
+                ema21_5m = ema([c.close for c in candles_5m], 21)
+            except ValueError:
+                ema21_5m = 0.0
+
         return IndiaContext(
             base=base,
             symbol=symbol,
@@ -149,6 +159,8 @@ class IndiaContextBuilder:
             bar_elapsed_fraction=bar_fraction,
             key_levels_extra=extra_levels,
             fii_dii_net_cr=self._macro.get_net_cr() if self._macro else 0.0,
+            session_vwap=session_vwap,
+            ema21_5m=ema21_5m,
         )
 
     @staticmethod

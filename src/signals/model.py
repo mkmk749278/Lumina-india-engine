@@ -276,6 +276,14 @@ class IndiaContext:
     # the real value.
     last_tick_age_sec: float | None = 0.0
 
+    # Session VWAP + EMA21(5m) as explicit fields (Session 21) — the
+    # extension-at-entry references. VWAP also still rides in
+    # key_levels_extra for level confluence; these exist so the scanner can
+    # stamp signed extension (entry vs anchor, in ATRs) on every signal
+    # without re-deriving the anchors. 0.0 = unavailable.
+    session_vwap: float = 0.0
+    ema21_5m: float = 0.0
+
     def current_volume_ratio(self) -> float:
         """Newest-5m-bar volume ratio: TOD-normalised when available, else the
         raw last-bar ÷ 20-bar-average ratio, else 0.0."""
