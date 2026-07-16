@@ -323,7 +323,6 @@ class GateChain:
             self._session_gate,
             self._warmup_gate,
             self._stale_data_gate,
-            self._spread_gate,
             self._cooldown_gate,
             self._event_risk_gate,
             self._circuit_check_gate,
@@ -550,14 +549,10 @@ class GateChain:
             )
         return None
 
-    @staticmethod
-    def _spread_gate(
-        signal: IndiaSignal,
-        ctx: IndiaContext,
-        session_state: SessionState,
-        now: datetime,
-    ) -> str | None:
-        return None
+    # NOTE: the Phase-1 spread gate stub was removed (Session 21). The Fyers
+    # lite-mode tick carries no bid/ask, so an honest spread gate has no
+    # input — and CLAUDE.md bans always-pass stubs. Re-add when Phase 2's
+    # depth-mode data exists.
 
     def _cooldown_gate(
         self,
@@ -905,6 +900,12 @@ class IndiaScanner:
         # 3 hours old). Reset with the day.
         self._md_label: str | None = None
         self._md_since: datetime | None = None
+        # Per-evaluator exception counter (Session 21). The blanket except
+        # around evaluate() keeps one broken evaluator from killing the scan,
+        # but before this counter a persistently-raising evaluator was
+        # silently absent with only a debug-level trail. Surfaced via the
+        # pulse payload — never silence a detected problem.
+        self._eval_errors: Counter[str] = Counter()
 
     @property
     def gates(self) -> GateChain:
@@ -998,8 +999,12 @@ class IndiaScanner:
                 try:
                     candidate = ev.evaluate(ctx)
                 except Exception:
+                    self._eval_errors[ev.setup_class] += 1
                     logger.opt(exception=True).warning(
-                        "evaluator {} raised on {}", ev.setup_class, base
+                        "evaluator {} raised on {} ({} errors today)",
+                        ev.setup_class,
+                        base,
+                        self._eval_errors[ev.setup_class],
                     )
                     continue
 
@@ -1100,8 +1105,14 @@ class IndiaScanner:
 
         return emitted
 
+    @property
+    def evaluator_errors(self) -> dict[str, int]:
+        """Exceptions swallowed per evaluator today (pulse/ops surface)."""
+        return dict(self._eval_errors)
+
     def reset_day(self) -> None:
         self._gates.reset_day()
         self._scan_count = 0
         self._md_label = None
         self._md_since = None
+        self._eval_errors.clear()

@@ -1158,12 +1158,23 @@ class DivergenceContinuation(Evaluator):
 
         prior_high_val = max(c.high for c in prior_window)
         current_high_val = max(c.high for c in recent)
+        # Guarded next(): float equality against a max() can miss (and a raised
+        # StopIteration would be silently swallowed by the scanner's blanket
+        # except, disabling this evaluator for the scan with only a log line).
         prior_high_idx = next(
-            i for i, c in enumerate(ctx.candles_5m)
-            if c.high == prior_high_val
-            and len(ctx.candles_5m) - lb * 2 <= i < len(ctx.candles_5m) - lb
+            (
+                i
+                for i, c in enumerate(ctx.candles_5m)
+                if c.high == prior_high_val
+                and len(ctx.candles_5m) - lb * 2 <= i < len(ctx.candles_5m) - lb
+            ),
+            None,
         )
-        rsi_at_prior_high = rsi(closes[: prior_high_idx + 1], 14) if prior_high_idx >= 15 else None
+        rsi_at_prior_high = (
+            rsi(closes[: prior_high_idx + 1], 14)
+            if prior_high_idx is not None and prior_high_idx >= 15
+            else None
+        )
 
         if (
             current_high_val > prior_high_val
@@ -1179,11 +1190,19 @@ class DivergenceContinuation(Evaluator):
         prior_low_val = min(c.low for c in prior_window)
         current_low_val = min(c.low for c in recent)
         prior_low_idx = next(
-            i for i, c in enumerate(ctx.candles_5m)
-            if c.low == prior_low_val
-            and len(ctx.candles_5m) - lb * 2 <= i < len(ctx.candles_5m) - lb
+            (
+                i
+                for i, c in enumerate(ctx.candles_5m)
+                if c.low == prior_low_val
+                and len(ctx.candles_5m) - lb * 2 <= i < len(ctx.candles_5m) - lb
+            ),
+            None,
         )
-        rsi_at_prior_low = rsi(closes[: prior_low_idx + 1], 14) if prior_low_idx >= 15 else None
+        rsi_at_prior_low = (
+            rsi(closes[: prior_low_idx + 1], 14)
+            if prior_low_idx is not None and prior_low_idx >= 15
+            else None
+        )
 
         if (
             current_low_val < prior_low_val

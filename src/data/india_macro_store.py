@@ -44,6 +44,33 @@ def _first_num(payload: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _parse_nse_report(payload: list) -> tuple[float | None, float | None, str]:
+    """Parse NSE's own FII/DII report shape (``/api/fiidiiTradeReact``):
+    a list of ``{"category": "FII/FPI *", "date": ..., "netValue": ...}``
+    rows. Returns (fii, dii, as_of) with None for a missing side — so the
+    deploy can point INDIA_FII_DII_URL straight at the NSE report (or any
+    adapter that mirrors it) without a bespoke transform."""
+    fii: float | None = None
+    dii: float | None = None
+    as_of = ""
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        category = str(row.get("category", "")).upper()
+        raw = row.get("netValue", row.get("net_value"))
+        try:
+            net = float(str(raw).replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        if "FII" in category or "FPI" in category:
+            fii = net
+        elif "DII" in category:
+            dii = net
+        if not as_of:
+            as_of = str(row.get("date") or "")
+    return fii, dii, as_of
+
+
 class IndiaMacroStore:
     """Prev-day FII/DII net cash, refreshed once per session open."""
 
@@ -101,15 +128,19 @@ class IndiaMacroStore:
             logger.warning("FII/DII fetch failed ({}): {}", url, exc)
             return False
 
-        if not isinstance(payload, dict):
+        if isinstance(payload, list):
+            # NSE's own report shape (list of category rows).
+            fii, dii, as_of = _parse_nse_report(payload)
+        elif isinstance(payload, dict):
+            fii = _first_num(payload, _FII_KEYS)
+            dii = _first_num(payload, _DII_KEYS)
+            as_of = str(payload.get("date") or payload.get("as_of") or "")
+        else:
             logger.warning("FII/DII payload not an object — treating as unavailable")
             return False
-        fii = _first_num(payload, _FII_KEYS)
-        dii = _first_num(payload, _DII_KEYS)
         if fii is None and dii is None:
             logger.warning("FII/DII payload had no recognised keys — unavailable")
             return False
-        as_of = str(payload.get("date") or payload.get("as_of") or "")
         self.set_fii_dii(fii or 0.0, dii or 0.0, as_of)
         logger.info(
             "FII/DII set: FII {:+.0f}cr DII {:+.0f}cr (as_of {})",

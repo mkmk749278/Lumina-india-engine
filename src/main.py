@@ -194,6 +194,12 @@ async def _run() -> None:
             "data_age_seconds": int(min(ages)) if ages else None,
             "last_tick_age_seconds": int(tick_age) if tick_age is not None else None,
             "suppressed_today": len(scanner.gates.suppressions),
+            # A persistently-raising evaluator is silently absent from the
+            # scan (blanket except) — this is where that stops being silent.
+            "evaluator_errors": scanner.evaluator_errors,
+            # Prev-day FII/DII macro state — 'available: false' means the
+            # direction classifier's macro vote is NEUTRAL, not bearish.
+            "macro": macro.snapshot(),
         }
 
     def _live_prices() -> dict[str, float]:
