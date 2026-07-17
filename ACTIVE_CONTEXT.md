@@ -1,10 +1,40 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-16 (Session 21 — outcome-ledger truth program: entry-trigger fills, 1m resolution, TP2 anchor, truth telemetry, scoring v2 + direction v2 in shadow, allocator arming dark. Branch `claude/stock-signal-quality-audit-9hzz0y`, engine + ops.)
+**Last updated:** 2026-07-17 (Session 22 — docs only: CLAUDE.md reconciled to as-built state across engine, app and ops. Branch `claude/claude-md-documentation-61vs7s`, all three repos.)
 
 ---
 
-## Session 21 (2026-07-16) — Signal-Quality Audit + Ledger-Truth Program
+## Session 22 (2026-07-17) — CLAUDE.md Reality Reconciliation (docs only)
+
+**Trigger:** scheduled documentation pass — CLAUDE.md in all three repos had
+drifted from the code.
+
+**Shipped (no code changes anywhere):**
+- **Engine CLAUDE.md rewritten to as-built state:** Module Map now lists only
+  files that exist (trade_monitor, signal_store, strategy_edge/allocator,
+  broker/ package incl. AngelOne alternate feed, macro store, event calendar,
+  replay harness, db/db_backup, owner_alerts) with the Phase-2 layer
+  (`src/execution/`, `src/security/`, `src/billing/`, snapshot writer)
+  explicitly marked planned-not-on-disk. Architecture corrected to the real
+  3-container stack (india-redis / india-engine / india-autoheal, API served
+  in-process). API routes corrected (`/api/...`, no `/india/` segment; added
+  pulse, outcomes, edge-matrix, allocator, admin, fyers/callback). New
+  Feature Flags section documents the Session-21 ACTIVE/SHADOW/DARK flags.
+  Stale "NIFTY+BANKNIFTY only" Phase-1 wording replaced with the IB1
+  owner-expanded universe (the old hard-limit line contradicted IB1 and this
+  file's own Conventions). Dark-flag arming added to owner-sign-off list.
+- **App CLAUDE.md rewritten:** real API contract (`/api/` prefix; pulse,
+  outcomes, session-summary, fcm-token), actual 3-tab navigation (no named
+  routes), generated-`android/` CI flow documented, Razorpay/paywall moved
+  to a clearly-labeled planned-not-built section, Session-tab analytics /
+  two-target plan / live P&L documented.
+- **Ops CLAUDE.md updated:** edge-matrix + allocator endpoints added,
+  NOT_TRIGGERED/ambiguous-tie outcome handling, runtime env vars, ruff in
+  Commands, analytics/exports module notes.
+
+**No open items added.** Session 21 forward plan unchanged and still owns
+next steps (NT-rate watch, direction-v2 judgement window, scoring-v2
+calibration, allocator arming decision, geometry floor re-set).
 
 **Trigger:** owner uploaded the 5-session live artifacts (334 resolved,
 28.4% win, +4.93% gross, **−0.045%/trade after the 0.06% cost model**) and
