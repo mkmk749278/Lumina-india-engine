@@ -16,7 +16,7 @@ You are CTE — Chief Technical Engineer and business partner. Full technical ow
 - Update `ACTIVE_CONTEXT.md` every session end.
 - **Cost is a first-class concern.** Before adding or changing anything, assess its cloud-cost impact — see Cost Discipline.
 - **SEBI compliance is non-negotiable.** Every order must carry NSE_ALGO_ID. AUTO_EXECUTION_ENABLED must remain false until RA registration + NSE empanelment confirmed and owner signs off.
-- **Reality first.** Always seek real data (prod logs, broker API responses, Firestore usage dashboard) before theorising about a cause or touching code. Never fabricate performance numbers. If you don't know — say so.
+- **Reality first.** Always seek real data (prod logs, broker API responses, the live outcome ledger) before theorising about a cause or touching code. Never fabricate performance numbers. If you don't know — say so.
 
 **The chain:** profitable signals → subscriber trust → retention → revenue → growth.
 
@@ -34,14 +34,15 @@ Ask before every code change: **"How does this make India F&O signals more profi
 
 ## Project Phase
 
-### Phase 1 — Signal Delivery (CURRENT — no live users yet)
+### Phase 1 — Signal Delivery (CURRENT — LIVE on real NSE data since 2026-07-03)
 
-Engine emits NSE F&O signals to the lumin-india-app only. **No Telegram. No auto-execution.**
+Engine emits NSE F&O signals to the lumin-india-app only. **No Telegram. No auto-execution.** No paid subscribers yet — the app runs in owner-testing mode while the 30-day signal-quality window accumulates.
 
-- Signal delivery path: `india_signals` SQLite write → FCM push notification → subscriber opens lumin-india-app → app polls `/api/india/signals` → renders signal card
+- Signal delivery path: `india_signals` SQLite write → FCM push notification → subscriber opens lumin-india-app → app polls `/api/signals` → renders signal card
 - `AUTO_EXECUTION_ENABLED=false`. No broker orders placed by the engine.
-- Gate: `INDEX_FUTURES_ONLY=true`. NIFTY and BANKNIFTY near-weekly contract only.
-- Validate signal quality on real NSE market data for minimum 30 trading days before Phase 2 evaluation.
+- Scanning universe per IB1 (owner-expanded 2026-07-07, Session 8e): index futures (`INDEX_BASES`: NIFTY, BANKNIFTY, FINNIFTY, NIFTYNXT50) + curated liquid F&O stocks (`STOCK_BASES`, 42 names). Futures only — no options.
+- Validate signal quality on real NSE market data for minimum 30 trading days before Phase 2 evaluation. Window started 2026-07-03.
+- **Current program (Session 21): outcome-ledger truth.** Entry-trigger fills, 1m outcome resolution, target-anchored TP2 and truth telemetry are ACTIVE (measurement, not strategy). Scoring v2 and direction v2 run in SHADOW. Emission-discipline gates and allocator arming are DARK (default-OFF, owner sign-off to arm). See Feature Flags below and `ACTIVE_CONTEXT.md`.
 
 **Phase 1 ships normally** — scanner, evaluators, confidence scoring, signal storage, FCM delivery, app API are off the money path. PR → CI green → merge.
 
@@ -56,6 +57,8 @@ Requires in sequence:
 6. Owner explicit sign-off to flip `AUTO_EXECUTION_ENABLED=true`
 
 Money-path changes in Phase 2 (execution, FSM, dispatch, broker orders) ship **DARK-FLAG-FIRST**: default-OFF, shadow-measured on real data window, activated only after owner sign-off on shadow result.
+
+**None of the Phase 2 execution code exists yet.** There is no `src/execution/`, `src/security/`, or `src/billing/` package on disk — do not go looking for them. The planned Phase 2 layout is listed at the bottom of the Module Map.
 
 ---
 
@@ -74,12 +77,13 @@ Money-path changes in Phase 2 (execution, FSM, dispatch, broker orders) ship **D
 - Blast-radius caps / position sizing parameters
 - Position FSM transitions (entry, SL/TP shape, BE shift, trail, force-close)
 - Evaluator scoring model changes or new evaluator paths
+- Arming any dark flag (`INDIA_ALLOCATOR_ARMED`, `INDIA_SCORING_V2_ACTIVE`, phase blocklist, dup entry-move gate)
 - Business Rules changes (IB1–IB18)
 - NSE_ALGO_ID changes
 - Razorpay / billing integration changes
 - SEBI compliance posture changes
 
-**Secrets:** All secrets live in GitHub Actions secrets. Never commit secrets to the repo. Never hardcode in Dockerfiles or source files. Injected at deploy time as environment variables into Docker containers. The signing service is the only container that ever holds a live broker access token in memory.
+**Secrets:** All secrets live in GitHub Actions secrets. Never commit secrets to the repo. Never hardcode in Dockerfiles or source files. Injected at deploy time as environment variables into Docker containers. In Phase 2, the signing service will be the only container that ever holds a live broker access token in memory.
 
 ---
 
@@ -96,7 +100,7 @@ Money-path changes in Phase 2 (execution, FSM, dispatch, broker orders) ship **D
 - **Never let a position sit OPEN without a stop.** SL is placed in the same atomic sequence as the entry order. Force-close all positions by 15:25 IST regardless.
 - **Never execute after 15:25 IST.** Hard session gate in SessionManager, no override.
 - **Never trade on NSE holidays.** HolidayManager gate at scanner and dispatch, no override.
-- **Never trade stock F&O in Phase 1.** `ALLOWED_BASES = ["NIFTY", "BANKNIFTY"]` guard at scanner entry.
+- **Never scan or trade outside `ALLOWED_BASES` (IB1).** Guard at scanner/expiry entry; a disallowed base raises a hard error. The universe is owner-controlled config — never widen it in code.
 - **Never add an uncached network read (Firestore, broker REST, external) to a per-tick, per-scan, or per-order hot path.** Cache it, gate on invalidation signal, defensive TTL.
 - **Never log a broker API access token or refresh token at any level. Never write it to disk. Never surface it in errors.**
 - **Never commit or push a file containing a secret.** GitHub Actions secrets are the only permitted storage for credentials.
@@ -123,100 +127,103 @@ Cloud cost is part of "production-grade." Every change is reviewed for cost the 
 
 ---
 
-## Architecture
+## Architecture (as built)
 
 ```
-NSE (via Fyers API v3 WebSocket)
+NSE  (Fyers API v3 WebSocket — primary; AngelOne feed — alternate)
       ↓
-IndiaTickStore (in-memory, hot ring buffer per symbol)
-IndiaHistoricalStore (SQLite cache, refreshed at session open)
-IndiaOIStore (OI + PCR updates from Fyers REST, 1-min poll)
-IndiaMarketData (VIX from NSE, PCR aggregate)
+IndiaTickStore   (in-memory ring buffers per symbol, incl. 1m ring)
+IndiaOIStore     (OI + PCR from broker REST, polled)
+IndiaMarketData  (India VIX, market-wide context)
+IndiaMacroStore  (FII/DII flows, macro events)
       ↓
-IndiaScanner (30s × NIFTY + BANKNIFTY) → 14 evaluators → gate chain → scoring
+Scanner (30s × ALLOWED_BASES) → 14 evaluators → gate chain → confidence scoring
       ↓
-IndiaSignalRouter
-  → india_signals SQLite write
-  → FCM push (via FirebaseAdmin SDK)
+SignalRouter
+  → signal_store (SQLite: india_signals, outcomes, session summary)
+  → FCM push (fcm_dispatcher via FirebaseAdmin SDK)
       ↓
-┌──────────────────────────────────────────────────────┐
-│ INDIA-ENGINE CONTAINER                               │
-│ IndiaTradeMonitor · IndiaSignalDispatch (Phase 2)   │
-│ IndiaPositionFSM · IndiaPositionWorker (Phase 2)    │
-│ IndiaReconciler · IndiaMarkPriceFeed (Phase 2)      │
-│ IndiaSnapshotWriter ──→ Redis ──→ INDIA-API         │
-│                               IndiaRedisEngineFacade │
-│                               HTTP (own event loop)  │
-└──────────────────────────────────────────────────────┘
-      ↓ (Phase 2 only)
-India Signing Service (separate container, Unix socket)
+TradeMonitor — outcome ledger: entry-trigger fill state machine,
+  1m outcome resolution, two-target plan (TP1/TP2/BE), MFE/MAE telemetry
       ↓
-Fyers REST API → NSE
+StrategyEdge (edge matrix) · StrategyAllocator (observe-only verdicts)
+      ↓
+FastAPI server (src/api/server.py) — runs IN-PROCESS inside the engine
+  container; serves lumin-india-app and lumin-india-ops
 ```
 
-**Four containers** (`docker-compose.india.yml`):
-- `india-redis` — snapshot bus, signal queue, rate-limit counters
-- `india-engine` — scanner, evaluators, FSM (Phase 2), snapshot writer
-- `india-api` — HTTP REST for lumin-india-app + ops dashboard
-- `india-signing` — broker token isolation, order signing (Phase 2)
+**Three containers** (`docker-compose.india.yml`):
+- `india-redis` — Redis (optional at runtime; engine falls back to in-memory)
+- `india-engine` — everything: feed, stores, scanner, router, trade monitor, FCM, HTTP API
+- `india-autoheal` — `willfarrell/autoheal`, restarts unhealthy containers
 
-**Shared volumes:**
-- `india-data` — SQLite database (india_db.sqlite3), mounted to engine + api
-- `india-sock` — Unix socket between engine + signing service (Phase 2)
+There is **no separate api container and no signing container** — those arrive with Phase 2. The HTTP API is served by the engine process itself.
 
-**Secrets injection:** GitHub Actions deploys to VPS via SSH. Secrets set as env vars in compose at deploy time. No `.env` file with real secrets on disk. Container reads secrets from environment only.
+**Volumes:** `india-data` (SQLite `india_db.sqlite3`), `india-redis`. Network: `india-net`.
 
-**Market session gate:** 09:15–15:30 IST, Monday–Friday, NSE holidays excluded. Engine's SessionManager controls scanner start/stop. All open positions (Phase 2) force-closed by 15:25.
+**Secrets injection:** GitHub Actions deploys to VPS via SSH (`deploy.yml` → `deploy.sh`). Secrets set as env vars at deploy time. No `.env` file with real secrets in the repo. Container reads secrets from environment only.
+
+**Market session gate:** 09:15–15:30 IST, Monday–Friday, NSE holidays excluded. SessionManager controls scanner start/stop. All open positions (Phase 2) force-closed by 15:25.
 
 ---
 
-## Module Map
+## Module Map (as built — every path below exists)
 
 | Concern | File |
 |---|---|
-| Boot, WS init, session orchestration | `src/main.py`, `src/bootstrap.py` |
+| Boot, feed init, session orchestration, API startup | `src/main.py` |
 | Session gate (open/close/holiday) | `src/session/session_manager.py` |
-| NSE holiday calendar | `src/session/holiday_manager.py` |
-| Weekly expiry resolution | `src/session/expiry_manager.py` |
-| Tick store (in-memory ring buffer) | `src/data/india_tick_store.py` |
-| Historical store (SQLite cache) | `src/data/india_historical_store.py` |
+| NSE holiday calendar | `src/session/holiday_manager.py` (data: `config/nse_holidays.json`) |
+| Monthly expiry + weekly-Tuesday flag, symbol resolution | `src/session/expiry_manager.py` |
+| Macro/event calendar | `src/session/event_calendar.py` (data: `config/macro_events.json`) |
+| Tick store (ring buffers incl. 1m) | `src/data/india_tick_store.py` |
 | OI + PCR store | `src/data/india_oi_store.py` |
 | India VIX + market-wide data | `src/data/india_market_data.py` |
+| FII/DII + macro store | `src/data/india_macro_store.py` |
+| Scan context assembly | `src/data/india_context_builder.py` |
+| Fyers WS feed (primary) | `src/broker/fyers_feed.py` |
+| AngelOne feed (alternate) | `src/broker/angel_feed.py` |
+| Broker token persistence | `src/broker/token_store.py` |
+| Historical candle utilities | `src/broker/history_utils.py` |
 | Scanner + gate chain | `src/scanner/__init__.py` |
-| 14 evaluators | `src/channels/india_scalp.py` |
-| Confidence scoring | `src/signal_quality.py` |
+| 14 evaluators | `src/channels/india_scalp.py` (base class: `src/channels/base.py`) |
+| Confidence scoring (v1 + v2 shadow) | `src/signal_quality.py` |
 | Regime classification | `src/regime.py` |
+| Market direction / bias (v1 + v2 shadow) | `src/market_context.py` |
+| Market profile | `src/market_profile.py` |
 | Level book (SR levels) | `src/level_book.py` |
 | Structure state (BOS/CHoCH) | `src/structure_state.py` |
 | Order blocks + FVG | `src/order_blocks.py` |
+| Indicators / patterns | `src/indicators.py`, `src/patterns.py` |
+| Signal model | `src/signals/model.py` |
+| Candle model | `src/market/candle.py` |
 | Signal router | `src/signal_router.py` |
+| Signal persistence (SQLite) | `src/signal_store.py` |
+| Outcome ledger / trade monitor | `src/trade_monitor.py` |
+| Strategy×Context edge matrix | `src/strategy_edge.py` |
+| Observe-only allocator | `src/strategy_allocator.py` |
 | FCM dispatcher | `src/fcm_dispatcher.py` |
+| Owner alerts | `src/owner_alerts.py` |
+| DB bootstrap / backup | `src/db.py`, `src/db_backup.py` |
+| API server (in-process FastAPI) | `src/api/server.py` |
 | Config tunables | `config/__init__.py` |
-| Per-user dispatch | `src/execution/signal_dispatch.py` |
-| Position FSM (Phase 2) | `src/execution/position_fsm.py` |
-| Position worker (Phase 2) | `src/execution/position_worker.py` |
-| Signing service (Phase 2) | `src/security/signing_service/` |
-| Firestore subscriber validator | `src/security/firestore_keystore.py` |
-| Kill switch | `src/execution/kill_switch.py` |
-| Blast-radius tripwires | `src/execution/tripwires.py` |
-| Reconciler (Phase 2) | `src/execution/reconciler.py` |
-| Mark price feed (Phase 2) | `src/execution/mark_price_feed.py` |
-| API server | `src/api/server.py` |
-| Redis engine facade | `src/api/redis_engine.py` |
-| Snapshot writer | `src/api/snapshot_writer.py` |
-| Razorpay billing handler | `src/billing/razorpay_handler.py` |
-| Subscriber validator | `src/billing/subscriber_validator.py` |
-| Runtime truth report | `src/runtime_truth_report.py` |
+| Replay harness (re-resolve ledger under any rule set) | `tools/replay.py`, `tools/replay_gates.py` |
+| Fyers OAuth token bootstrap / refresh | `scripts/fyers_token.py`, `scripts/fyers_refresh.py` |
+| Container healthcheck | `healthcheck.py` |
+
+### Planned — Phase 2 (NOT on disk; do not reference as existing code)
+
+Per-user dispatch (`src/execution/signal_dispatch.py`), position FSM/worker, kill switch, tripwires, reconciler, mark-price feed (`src/execution/`), signing service + Firestore keystore (`src/security/`), Razorpay handler + subscriber validator (`src/billing/`), separate `india-api`/`india-signing` containers with a Redis snapshot bus. These ship dark-flag-first when Phase 2 unlocks.
 
 ---
 
 ## Broker API
 
-**Primary: Fyers API v3**
+**Primary: Fyers API v3** (alternate feed: AngelOne SmartAPI, `src/broker/angel_feed.py`, selected in `src/main.py`)
 - Free for Fyers account holders — zero monthly API cost
 - WebSocket: up to 5,000 symbol subscriptions
 - Historical data: up to 1,000 candles per call, free
-- OAuth2 with TOTP — daily token refresh via signing service
+- OAuth2 with TOTP — token bootstrap via `scripts/fyers_token.py`, daily refresh via `scripts/fyers_refresh.py`; OAuth redirect lands on `GET /fyers/callback`
 - Bracket + cover orders with SL/TP (Phase 2)
 - Market + limit + SL orders
 
@@ -232,24 +239,66 @@ Fyers REST API → NSE
 
 ---
 
+## Feature Flags (Session 21 truth program)
+
+All in `config/__init__.py`, env-overridable. Three activation states:
+
+**ACTIVE by default (measurement, not strategy):**
+- `INDIA_ENTRY_TRIGGER_ENABLED=true` — LEVEL entries fill only when price trades through entry; unfilled → `NOT_TRIGGERED`, excluded from all win/EV denominators
+- `INDIA_OUTCOME_RESOLUTION_TF=1m` — outcomes resolved on 1m candles (per-signal 5m fallback)
+- `INDIA_TP2_SELECT_MODE=target_anchored` — TP2 anchored to targets, not band bottom
+
+**SHADOW (measured, nothing gates on them):**
+- `INDIA_SCORING_V2_SHADOW=true` / `INDIA_SCORING_V2_ACTIVE=false` — `confidence_v2` recorded alongside v1; v1 still drives tiers and delivery
+- Direction v2 (`market_direction_v2` / `index_bias_v2`) — recorded per signal, does not gate
+
+**DARK — default-OFF, owner sign-off to arm (see Change-Management):**
+- `INDIA_PHASE_BLOCKLIST=""` — CSV of FAMILY:PHASE pairs to suppress
+- `INDIA_DUP_MIN_ENTRY_MOVE_ATR=0.0` — duplicate-signal entry-move gate
+- `INDIA_ALLOCATOR_ARMED=false` — allocator SUPPRESS verdicts become real (tunables: `INDIA_ALLOCATOR_MIN_SAMPLE=20`, `INDIA_ALLOCATOR_EV_FLOOR`, `INDIA_ALLOCATOR_SUPPRESS_EV`)
+
+---
+
+## HTTP API (served in-process, `src/api/server.py`)
+
+Token-gated (bearer; separate admin token for `/api/admin/*`). **No `/india/` path segment — routes are `/api/...`:**
+
+- `GET /api/health` — liveness
+- `GET /api/pulse` — session state, scan count, feed health, auto_execution, allowed_bases
+- `GET /api/signals` (per-date + filters) · `GET /api/signals/{signal_id}`
+- `GET /api/suppressed` — gate rejection telemetry
+- `GET /api/outcomes` — resolved outcomes incl. walk telemetry (MFE/MAE, bars-to-resolve)
+- `GET /api/session-summary` — daily quality ledger
+- `GET /api/edge-matrix?days=` — Strategy×Context edge matrix
+- `GET /api/allocator?days=` — observe-only allocator verdicts
+- `POST /api/fcm-token` — app device-token registration
+- `POST /api/admin/clear-history` · `POST /api/admin/reset-gates` — ops Control panel (static admin token only)
+- `GET /fyers/callback` — Fyers OAuth redirect (HTML)
+
+Consumers: lumin-india-app (pulse, signals, outcomes, session-summary, fcm-token) and lumin-india-ops (everything else). Keep both consumers in mind on any response-shape change.
+
+---
+
 ## Telemetry & Diagnosis
 
-- **Gate suppression telemetry** — every gate rejection tagged with gate name + reason. First stop when "no signals firing." Surface via `/api/india/suppressed` and ops dashboard.
-- **Session summary** — `india_session_summary` SQLite table. Written at session close (15:30 IST). Fields: date, signal_count, a_plus_count, avg_confidence, gates_fired, total_suppressed.
-- **Signal quality log** — `india_signals` table. Every emitted signal stored with entry price, SL, TP1, confidence, evaluator_name, regime.
-- **Blast-radius audit** — `india_order_audit` SQLite table (Phase 2). Every order attempt logged with outcome, broker_order_id, fill_price.
-- **Truth report** — same pattern as crypto engine; written to `monitor-logs` branch by monitoring agent once deployed.
-- **Ops dashboard** — lumin-india-ops (to be built). India tab in ops.luminapp.org for kill switch, auto-mode, session summary, signal feed.
+- **Gate suppression telemetry** — every gate rejection tagged with gate name + reason. First stop when "no signals firing." Surface via `GET /api/suppressed` and the ops dashboard.
+- **Signal quality log** — `india_signals` table: entry, SL, TP1/TP2, confidence (+ `confidence_v2` shadow), evaluator, regime, setup_class, extension-at-entry, bias-age, dup-ordinal stamps.
+- **Outcome ledger** — resolved outcomes with status (`SL_HIT / TP1_HIT / TP1_BE / TP2_HIT / TP1_EXPIRED / EXPIRED / NOT_TRIGGERED`), position-weighted `result_pct`, MFE/MAE, bars-to-resolve, resolving TF, ambiguous-tie flag. `NOT_TRIGGERED` is excluded from win/EV denominators everywhere.
+- **Session summary** — `india_session_summary` table, written at session close (15:30 IST).
+- **Edge matrix / allocator** — `src/strategy_edge.py` + `src/strategy_allocator.py`, read by ops Edge/Allocator views. Legacy (pre-migration) rows segregated from context cohorts.
+- **Replay harness** — `tools/replay.py` re-resolves the ledger under any rule set; use it before proposing gate/geometry changes.
+- **Blast-radius audit** — `india_order_audit` table (Phase 2, not yet written).
+- **Ops dashboard** — lumin-india-ops (built, deployed): Pulse, Signals, Suppressed, Outcomes, Edge, Allocator, Quality, Strategy, Control.
 
 ---
 
 ## Commands
 
 ```bash
-# Tests
+# Tests (~553 tests across ~58 files)
 python -m pytest tests/ -x -q
 
-# Lint / type-check
+# Lint / type-check (CI runs both)
 ruff check src/ config/
 mypy src/ config/
 
@@ -257,49 +306,52 @@ mypy src/ config/
 python3 -c "import ast; ast.parse(open('src/<file>.py').read()); print('OK')"
 
 # Docker — full stack (VPS production)
-bash deploy.sh
+bash deploy.sh          # add --clean for a from-scratch rebuild
 
 # Docker — local dev (no secrets needed for Phase 1 scanner)
 docker compose -f docker-compose.india.yml up --build
 
 # Logs
 docker logs india-engine --tail 100
-docker logs india-api --tail 100
-docker logs india-signing --tail 50
+docker logs india-redis --tail 50
 
-# Redis health
-docker exec india-redis redis-cli KEYS "india:snapshot:*"
+# Redis health (optional dependency — engine runs without it)
+docker exec india-redis redis-cli PING
 
 # Run engine locally (market hours check disabled for dev)
 INDIA_DEV_MODE=true python -m src.main
+
+# Replay the outcome ledger under a candidate rule set
+python -m tools.replay --help
 
 # Check NSE holiday list
 python -c "from src.session.holiday_manager import HolidayManager; print(HolidayManager().is_holiday('2026-08-15'))"
 ```
 
-`pyproject.toml` sets `asyncio_mode = auto` — async tests need no decorators.
+`pyproject.toml` sets `asyncio_mode = auto` — async tests need no decorators. Python ≥3.11; ruff line-length 100; mypy strict-ish (`disallow_untyped_defs`).
 
 ---
 
 ## Conventions
 
 - **Logging:** `loguru` via `src.utils.get_logger(name)` — never `print` or stdlib `logging`
-- **Config:** all values env-overridable via `config/__init__.py` helpers (`_safe_int`, `_safe_float`, `_safe_bool`, `_safe_choice`)
+- **Config:** all values env-overridable via `config/__init__.py` helpers (`_safe_int`, `_safe_float`, `_safe_bool`, `_safe_str`, `_safe_choice`)
 - **All async** — no blocking calls in scanner / router / monitor loops
 - **Redis is optional** — falls back to in-memory if not available
 - **Each evaluator owns its SL/TP geometry** — no shared universal formulas
 - **IST everywhere** — `pytz.timezone('Asia/Kolkata')`. Never use naive datetimes. Store all timestamps as IST-aware.
-- **Lot sizes are non-negotiable** — always trade in whole lots. Current NSE values (Jan-2026 rebaseline, circular FAOP70616): **NIFTY 65 units/lot, BANKNIFTY 30 units/lot** (down from 75/35). Env-overridable (`NIFTY_LOT_SIZE`/`BANKNIFTY_LOT_SIZE`) so the next NSE revision is a config change. Never partial lots.
+- **Lot sizes are non-negotiable** — always trade in whole lots. Current NSE values (Jan-2026 rebaseline, circular FAOP70616): **NIFTY 65, BANKNIFTY 30, FINNIFTY 60, NIFTYNXT50 25** units/lot. Env-overridable (`<BASE>_LOT_SIZE`) so the next NSE revision is a config change. Never partial lots.
 - **Index futures are MONTHLY** — NIFTY/BANKNIFTY futures expire on the **last Tuesday** of the contract month (SEBI 1-Sep-2025 revision; formerly last Thursday). There is no weekly future — weekly cadence is options-only. ExpiryManager owns the monthly contract expiry (symbol/roll/days-to-expiry) *and* the weekly-Tuesday flag (gamma-squeeze / IB16), which are distinct.
 - **Scanning universe (owner-controlled, IB1)** — `ALLOWED_BASES` = index futures (`INDEX_BASES`: NIFTY, BANKNIFTY, FINNIFTY, NIFTYNXT50) + curated liquid F&O stocks (`STOCK_BASES`), all env-overridable. Guard at scanner/expiry entry; disallowed bases raise a hard error. Index-only evaluators (PCR_EXTREME, EXPIRY_GAMMA_SQUEEZE) skip stock bases. Futures only — no options.
 - **Fyers symbol format** — `NSE:NIFTY26AUGFUT` (Fyers v3 format, no `-FF` suffix). ExpiryManager owns symbol resolution.
 - **STT-aware minimum** — minimum viable scalp: 15 NIFTY points or 40 BANKNIFTY points (covers round-trip STT + brokerage). Signals below this R:R floor are suppressed at confidence floor gate.
+- **Ledger truth over theory** — outcome statuses, win rates and EV always come from the resolved ledger (`NOT_TRIGGERED` excluded). Before changing a gate or geometry rule, replay it (`tools/replay.py`) against the real ledger.
 
 ---
 
 ## Infrastructure
 
-- **VPS:** Dedicated Ubuntu 22.04 server (separate from crypto engine). Docker + Docker Compose. Min 2 vCPU / 4 GB RAM for Phase 1.
+- **VPS:** Dedicated Ubuntu 22.04 server (separate from crypto engine). Docker + Docker Compose. Min 2 vCPU / 4 GB RAM for Phase 1. Bootstrap: `scripts/vps_bootstrap.sh`; nginx: `tools/setup-nginx.sh`. Public base URL: `https://lumintrade.app`.
 - **Termux:** Owner interacts with VPS via SSH from Android (Termux). All commands must work on a standard SSH terminal session.
-- **GitHub Actions:** CI/CD pipeline. On push to `main`: run tests → lint → SSH into VPS → pull + rebuild containers. Secrets injected at this step, never stored on disk.
+- **GitHub Actions:** `ci.yml` (tests + lint on PRs), `deploy.yml` (on push to `main`: SSH into VPS → pull + rebuild containers). Secrets injected at this step, never stored on disk.
 - **Static IP:** VPS must have a static IP for Fyers API whitelist. Confirm before Phase 2 activation.
