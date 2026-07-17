@@ -97,3 +97,60 @@ def market_bias(ctx: IndiaContext) -> str:
     if day_change_pct <= -INDEX_BIAS_MIN_PCT and last < ema21:
         return Direction.SHORT
     return NEUTRAL
+
+
+def market_bias_v2(ctx: IndiaContext) -> str:
+    """De-lagged intraday bias (Session 21 — measured in SHADOW only).
+
+    The v1 bias is confirmation-lagging by construction: it needs the day
+    change already ≥ INDEX_BIAS_MIN_PCT *and* price beyond EMA21, so the
+    label latches only after the move is mature — and the direction gate
+    then forces entries into exhaustion (the live 6.2%-win
+    LONG_BIASED/LONG cohort). v2 votes three faster reads, majority wins:
+
+      1. price vs session VWAP (the institutional intraday anchor — live
+         from the first bar of the day)
+      2. price vs EMA21-5m when 21 bars exist, else price vs prev-day close
+         (the early-session substitute — v1 was structurally NEUTRAL for
+         the first ~105 minutes)
+      3. day change beyond ±INDEX_BIAS_MIN_PCT (else NEUTRAL)
+
+    ≥2 aligned votes AND strictly more than the opposing count → direction.
+    One opposing vote does not block (v1's zero-opposing rule is what made
+    it latch late and stay latched); a genuinely mixed tape still reads
+    NEUTRAL. Nothing gates on this until the shadow window proves it.
+    """
+    if ctx.day_open <= 0 or not ctx.candles_5m:
+        return NEUTRAL
+    last = ctx.candles_5m[-1].close
+    votes: list[str] = []
+
+    if ctx.session_vwap > 0:
+        votes.append(
+            Direction.LONG if last > ctx.session_vwap else Direction.SHORT
+        )
+
+    if len(ctx.candles_5m) >= 21:
+        anchor = (
+            ctx.ema21_5m
+            if ctx.ema21_5m > 0
+            else ema([c.close for c in ctx.candles_5m], 21)
+        )
+    else:
+        anchor = ctx.prev_day_close
+    if anchor > 0:
+        votes.append(Direction.LONG if last > anchor else Direction.SHORT)
+
+    day_change_pct = (last - ctx.day_open) / ctx.day_open * 100.0
+    if day_change_pct >= INDEX_BIAS_MIN_PCT:
+        votes.append(Direction.LONG)
+    elif day_change_pct <= -INDEX_BIAS_MIN_PCT:
+        votes.append(Direction.SHORT)
+
+    longs = votes.count(Direction.LONG)
+    shorts = votes.count(Direction.SHORT)
+    if longs >= 2 and longs > shorts:
+        return Direction.LONG
+    if shorts >= 2 and shorts > longs:
+        return Direction.SHORT
+    return NEUTRAL

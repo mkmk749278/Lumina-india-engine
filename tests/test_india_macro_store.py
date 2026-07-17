@@ -70,3 +70,45 @@ async def test_refresh_unrecognised_payload_stays_unavailable(monkeypatch):
     ok = await store.refresh(http_client=_FakeClient({"unrelated": 1}))
     assert ok is False
     assert store.get_net_cr() == 0.0
+
+
+async def test_refresh_parses_nse_report_list_shape(monkeypatch):
+    """NSE's /api/fiidiiTradeReact returns a LIST of category rows — the
+    deploy can point INDIA_FII_DII_URL straight at it."""
+    import config as _config
+    from src.data.india_macro_store import IndiaMacroStore
+
+    monkeypatch.setattr(_config, "FII_DII_URL", "https://example.test/fiidii")
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [
+                {
+                    "category": "DII **",
+                    "date": "16-Jul-2026",
+                    "buyValue": "12,000.00",
+                    "sellValue": "11,000.00",
+                    "netValue": "1,000.00",
+                },
+                {
+                    "category": "FII/FPI *",
+                    "date": "16-Jul-2026",
+                    "netValue": "-2,500.50",
+                },
+            ]
+
+    class _Client:
+        async def get(self, url):
+            return _Resp()
+
+    store = IndiaMacroStore()
+    assert await store.refresh(http_client=_Client()) is True
+    snap = store.snapshot()
+    assert snap["available"] is True
+    assert snap["fii_net_cr"] == -2500.50
+    assert snap["dii_net_cr"] == 1000.00
+    assert store.get_net_cr() == -1500.50
+    assert snap["as_of"] == "16-Jul-2026"

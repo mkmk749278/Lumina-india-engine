@@ -157,3 +157,34 @@ def test_build_pcr_zero_when_never_polled() -> None:
     builder = IndiaContextBuilder(tick, fresh_oi, mkt, expiry)
     ctx = builder.build(_SYM, _BASE, _ist(11, 0))
     assert ctx.pcr == 0.0
+
+
+def test_refresh_daily_regime_folds_running_bar() -> None:
+    """B4 fix: a range-morning that develops into a trend must be able to
+    re-classify same-day (default OFF; this exercises the mechanism)."""
+    from src.regime import Regime
+
+    tick, oi, mkt, expiry = _make_stores()
+    builder = IndiaContextBuilder(tick, oi, mkt, expiry)
+
+    # ~200 flat daily bars -> RANGING seed.
+    daily_base = IST.localize(datetime(2025, 9, 1))
+    flat = [
+        Candle(ts=daily_base + timedelta(days=i), open=24000.0, high=24050.0,
+               low=23950.0, close=24000.0, volume=1000)
+        for i in range(200)
+    ]
+    builder.set_daily_regime(_SYM, Regime.RANGING)
+
+    # Without the daily series the refresh is a no-op (label unchanged).
+    assert builder.refresh_daily_regime(_SYM, _ist(11, 0)) is None
+    builder.set_daily_candles(_SYM, flat)
+
+    # A monster up-day: running bar far above the flat series.
+    tick.on_tick(_SYM, 24000.0, 10.0, _ist(9, 15))
+    tick.on_tick(_SYM, 26400.0, 10.0, _ist(11, 0))  # +10% intraday
+    result = builder.refresh_daily_regime(_SYM, _ist(11, 0))
+    assert result is not None
+    # And the next build() reads the refreshed label.
+    ctx = builder.build(_SYM, _BASE, _ist(11, 0))
+    assert ctx.regime_daily == result

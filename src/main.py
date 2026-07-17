@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 import config
-from src import owner_alerts, strategy_edge
+from src import owner_alerts, strategy_allocator, strategy_edge
 from src.api.server import (
     build_app,
     serve_api,
@@ -49,12 +49,30 @@ from src.signal_store import (
     init_tables,
     insert_outcome,
     mark_tp1_touched,
+    mark_triggered,
     write_session_summary,
 )
-from src.trade_monitor import IndiaTradeMonitor
+from src.trade_monitor import IndiaTradeMonitor, SignalOutcome
 from src.utils import get_logger
 
 logger = get_logger("main")
+
+
+async def _persist_outcome(oc: SignalOutcome) -> None:
+    """One write path for every resolved outcome (walk telemetry included)."""
+    await insert_outcome(
+        oc.signal_id,
+        oc.outcome,
+        oc.exit_price,
+        oc.points,
+        oc.pct,
+        oc.resolved_at,
+        mfe_pct=oc.mfe_pct,
+        mae_pct=oc.mae_pct,
+        bars_to_resolve=oc.bars_to_resolve,
+        resolution_tf=oc.resolution_tf,
+        ambiguous_tie=oc.ambiguous_tie,
+    )
 
 _HEARTBEAT_PATH = Path("/tmp/india_engine_heartbeat")
 _API_PORT: int = int(os.environ.get("API_PORT", "8000"))
@@ -116,6 +134,7 @@ async def _run() -> None:
             expiry,
             on_prev_day=ctx_builder.set_prev_day,
             on_daily_regime=ctx_builder.set_daily_regime,
+            on_daily_candles=ctx_builder.set_daily_candles,
         )
         feed = fyers_feed
         client_id = os.environ.get("FYERS_CLIENT_ID", "")
@@ -176,6 +195,12 @@ async def _run() -> None:
             "data_age_seconds": int(min(ages)) if ages else None,
             "last_tick_age_seconds": int(tick_age) if tick_age is not None else None,
             "suppressed_today": len(scanner.gates.suppressions),
+            # A persistently-raising evaluator is silently absent from the
+            # scan (blanket except) — this is where that stops being silent.
+            "evaluator_errors": scanner.evaluator_errors,
+            # Prev-day FII/DII macro state — 'available: false' means the
+            # direction classifier's macro vote is NEUTRAL, not bearish.
+            "macro": macro.snapshot(),
         }
 
     def _live_prices() -> dict[str, float]:
@@ -237,6 +262,9 @@ async def _run() -> None:
     market_live_since: float | None = None
     last_feed_restart = float("-inf")
     consecutive_stall_restarts = 0
+    # Intraday daily-regime refresh clock (B4 fix — inert at the default
+    # INDIA_DAILY_REGIME_REFRESH_MIN=0).
+    last_regime_refresh = float("-inf")
 
     def _admin_state_reset() -> dict:
         """Ops Control panel hook: align in-memory state with a wiped DB —
@@ -274,6 +302,25 @@ async def _run() -> None:
                         scanner.set_edge_index(await strategy_edge.get_edge_index())
                     except Exception:
                         logger.opt(exception=True).warning("edge index load failed")
+                    # Load the allocator verdicts once per open. Only SUPPRESS
+                    # cohorts (n ≥ min-sample AND ev ≤ threshold) enter the
+                    # set — HOLD/INSUFFICIENT_DATA never act. Dark-logged
+                    # unless INDIA_ALLOCATOR_ARMED (owner sign-off).
+                    try:
+                        allocation = await strategy_allocator.get_allocation()
+                        recs = allocation.get("allocation", {}).get(
+                            "recommendations", {}
+                        )
+                        suppress = frozenset(
+                            str(r["key"])
+                            for r in recs.get("by_setup_direction", [])
+                            if r.get("verdict") == "SUPPRESS"
+                        )
+                        scanner.set_allocator_suppress(suppress)
+                    except Exception:
+                        logger.opt(exception=True).warning(
+                            "allocator verdict load failed"
+                        )
                     if not feed_active[0]:
                         # The most likely daily failure: the Fyers token was
                         # never tapped this morning. Page the owner instead
@@ -309,25 +356,13 @@ async def _run() -> None:
                     # Resolve any TP/SL touch that landed during CLOSING
                     # before scoring the remainder as EXPIRED.
                     for oc in monitor.check(now):
-                        await insert_outcome(
-                            oc.signal_id,
-                            oc.outcome,
-                            oc.exit_price,
-                            oc.points,
-                            oc.pct,
-                            oc.resolved_at,
-                        )
+                        await _persist_outcome(oc)
+                    for sid, triggered_at in monitor.drain_trigger_marks():
+                        await mark_triggered(sid, triggered_at)
                     for sid, touched_at in monitor.drain_tp1_marks():
                         await mark_tp1_touched(sid, touched_at)
                     for oc in monitor.force_close_all(now):
-                        await insert_outcome(
-                            oc.signal_id,
-                            oc.outcome,
-                            oc.exit_price,
-                            oc.points,
-                            oc.pct,
-                            oc.resolved_at,
-                        )
+                        await _persist_outcome(oc)
                     summary = await write_session_summary()
                     logger.info(
                         "session summary written: {} signals, "
@@ -343,6 +378,18 @@ async def _run() -> None:
 
             if state == SessionState.OPEN or config.INDIA_DEV_MODE:
                 symbols = feed.symbols if feed_active[0] else {}
+                # Optional intraday daily-regime refresh: fold today's
+                # running daily bar into each symbol's seeded series so a
+                # trend that develops after the open reaches the chop /
+                # regime-setup gates same-day. Zero I/O.
+                if (
+                    config.DAILY_REGIME_REFRESH_MIN > 0
+                    and time.monotonic() - last_regime_refresh
+                    >= config.DAILY_REGIME_REFRESH_MIN * 60
+                ):
+                    last_regime_refresh = time.monotonic()
+                    for sym in symbols.values():
+                        ctx_builder.refresh_daily_regime(sym, now)
                 signals = scanner.scan(symbols, now)
                 scan_count_ref[0] += 1
 
@@ -371,16 +418,11 @@ async def _run() -> None:
                 or config.INDIA_DEV_MODE
             ):
                 for oc in monitor.check(now):
-                    await insert_outcome(
-                        oc.signal_id,
-                        oc.outcome,
-                        oc.exit_price,
-                        oc.points,
-                        oc.pct,
-                        oc.resolved_at,
-                    )
-                # Persist runner armings (two-target plan) so a banked TP1
-                # survives an engine restart instead of re-racing SL vs TP1.
+                    await _persist_outcome(oc)
+                # Persist entry triggers + runner armings so a fill and a
+                # banked TP1 both survive an engine restart.
+                for sid, triggered_at in monitor.drain_trigger_marks():
+                    await mark_triggered(sid, triggered_at)
                 for sid, touched_at in monitor.drain_tp1_marks():
                     await mark_tp1_touched(sid, touched_at)
 

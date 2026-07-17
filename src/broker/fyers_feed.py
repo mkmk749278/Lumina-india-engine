@@ -129,9 +129,11 @@ class FyersDataFeed:
         expiry_mgr: ExpiryManager,
         on_prev_day: Callable[[str, float, float, float], None] | None = None,
         on_daily_regime: Callable[[str, Regime], None] | None = None,
+        on_daily_candles: Callable[[str, list[Candle]], None] | None = None,
     ) -> None:
         self._on_prev_day = on_prev_day
         self._on_daily_regime = on_daily_regime
+        self._on_daily_candles = on_daily_candles
         self._tick = tick_store
         self._oi = oi_store
         self._mkt = market_data
@@ -534,6 +536,11 @@ class FyersDataFeed:
             daily = [c for c in daily if c.ts.date() < now.date()]
             regime = classify(daily) if len(daily) >= 56 else Regime.RANGING
             self._on_daily_regime(symbol, regime)
+            # Hand the series to the context builder too, so the (optional,
+            # default-off) intraday daily-regime refresh can fold today's
+            # running bar without another fetch.
+            if self._on_daily_candles is not None:
+                self._on_daily_candles(symbol, daily)
             logger.info(
                 "daily regime for {}: {} ({} daily bars)",
                 base,

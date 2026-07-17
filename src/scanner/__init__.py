@@ -58,6 +58,7 @@ telemetry — CLAUDE.md). Surface via ``/api/india/suppressed`` and ops.
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -82,13 +83,24 @@ from src.channels import (
     VolumeSurgeBreakout,
 )
 from src.data.india_context_builder import IndiaContextBuilder
-from src.market_context import MarketContext, MarketDirection
+from src.market_context import (
+    MarketContext,
+    MarketDirection,
+    classify_session_phase,
+)
 from src.regime import Regime
 from src.session.event_calendar import EventCalendar
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
 from src.signal_quality import IndiaSignalScoringEngine, tier_for
-from src.signals.model import Direction, IndiaContext, IndiaSignal, is_trend_family
+from src.signals.model import (
+    SETUP_FAMILY,
+    Direction,
+    IndiaContext,
+    IndiaSignal,
+    SetupFamily,
+    is_trend_family,
+)
 from src.signals.model import Tier as Tier
 from src.utils import get_logger
 
@@ -217,6 +229,22 @@ _TP_FEASIBILITY_EFFICIENCY: float = config._safe_float(
 )
 
 
+def _parse_phase_blocklist(raw: str) -> frozenset[tuple[str, str]]:
+    """CSV of FAMILY:PHASE pairs -> {(family, phase)}. Malformed entries are
+    skipped (an unparseable blocklist must fail open, not suppress)."""
+    pairs: set[tuple[str, str]] = set()
+    for entry in raw.split(","):
+        family, sep, phase = entry.strip().partition(":")
+        if sep and family.strip() and phase.strip():
+            pairs.add((family.strip().upper(), phase.strip().upper()))
+    return frozenset(pairs)
+
+
+_PHASE_BLOCKLIST: frozenset[tuple[str, str]] = _parse_phase_blocklist(
+    config.PHASE_BLOCKLIST
+)
+
+
 # ── Gate result ──────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -248,6 +276,14 @@ class GateChain:
         self._group_dir_this_scan: Counter[tuple[str, str]] = Counter()
         # (setup class, direction) -> emissions this scan (setup flood cap).
         self._setup_dir_this_scan: Counter[tuple[str, str]] = Counter()
+        # (base, direction) -> entry of the latest emission (duplicate
+        # entry-move policy: a re-fire must print genuinely new structure).
+        self._last_entry: dict[tuple[str, str], float] = {}
+        # "SETUP/DIRECTION" cohorts the allocator marks SUPPRESS, loaded at
+        # session open. Acted on only when INDIA_ALLOCATOR_ARMED; otherwise
+        # every would-suppress is dark-logged so the owner can watch the
+        # verdicts track outcomes before arming (owner sign-off).
+        self._allocator_suppress: frozenset[str] = frozenset()
 
     def begin_scan(self) -> None:
         """Reset the per-scan counters. Called once per scan."""
@@ -283,6 +319,9 @@ class GateChain:
             last = self._last_base_emission.get(base)
             if last is None or last[1] < ts:
                 self._last_base_emission[base] = (direction, ts)
+                entry = float(row.get("entry", 0) or 0)
+                if entry > 0:
+                    self._last_entry[(base, direction)] = entry
         if rows:
             logger.info(
                 "gate chain rehydrated: {} emissions already today", len(rows)
@@ -323,7 +362,6 @@ class GateChain:
             self._session_gate,
             self._warmup_gate,
             self._stale_data_gate,
-            self._spread_gate,
             self._cooldown_gate,
             self._event_risk_gate,
             self._circuit_check_gate,
@@ -341,6 +379,7 @@ class GateChain:
             self._chop_gate,
             self._regime_setup_gate,
             self._tp_feasibility_gate,
+            self._phase_affinity_gate,
         ):
             reason = gate_fn(signal, ctx, session_state, now)
             if reason is not None:
@@ -450,10 +489,62 @@ class GateChain:
                 ctx,
                 now,
             )
+        # Duplicate entry-move policy (default OFF): a same-(base, direction)
+        # re-fire whose entry sits within k×ATR of the previous emission's
+        # entry is the same idea echoing, not new structure.
+        if config.DUP_MIN_ENTRY_MOVE_ATR > 0 and ctx.atr14_5m > 0:
+            prev_entry = self._last_entry.get((ctx.base, signal.direction))
+            if prev_entry is not None:
+                moved = abs(signal.entry - prev_entry)
+                floor = ctx.atr14_5m * config.DUP_MIN_ENTRY_MOVE_ATR
+                if moved < floor:
+                    return self._suppress(
+                        "duplicate_entry_gate",
+                        f"entry {signal.entry:.1f} only {moved:.1f} pts from"
+                        f" the previous {signal.direction} emission on"
+                        f" {ctx.base} ({prev_entry:.1f}) — needs ≥{floor:.1f}"
+                        f" ({config.DUP_MIN_ENTRY_MOVE_ATR}x ATR) of new"
+                        " structure",
+                        signal,
+                        ctx,
+                        now,
+                    )
+        # Allocator SUPPRESS (owner sign-off to arm): cohorts with n ≥
+        # min-sample and expectancy ≤ the suppress threshold, re-derived
+        # from the ledger at each session open (self-reversing). HOLD and
+        # INSUFFICIENT_DATA never reach this set.
+        cohort = f"{signal.setup_class}/{signal.direction}"
+        if cohort in self._allocator_suppress:
+            if config.ALLOCATOR_ARMED:
+                return self._suppress(
+                    "allocator_suppress_gate",
+                    f"{cohort} is a measured-negative cohort"
+                    " (allocator SUPPRESS, re-derived daily)",
+                    signal,
+                    ctx,
+                    now,
+                )
+            logger.info(
+                "allocator would-suppress (dark, not armed): {} on {}"
+                " conf={:.0f}",
+                cohort,
+                ctx.base,
+                signal.confidence,
+            )
         return None
 
+    def emitted_count(self, base: str, direction: str) -> int:
+        """How many (base, direction) emissions have happened today —
+        the duplicate ordinal the scanner stamps on each signal."""
+        return self._emitted_today[(base, direction)]
+
     def record_emission(
-        self, setup_class: str, base: str, direction: str, now: datetime
+        self,
+        setup_class: str,
+        base: str,
+        direction: str,
+        now: datetime,
+        entry: float = 0.0,
     ) -> None:
         key = f"{setup_class}:{base}"
         self._last_fire[key] = now
@@ -462,6 +553,19 @@ class GateChain:
         self._last_base_emission[base] = (direction, now)
         self._group_dir_this_scan[(dependency.group_for(base), direction)] += 1
         self._setup_dir_this_scan[(setup_class, direction)] += 1
+        if entry > 0:
+            self._last_entry[(base, direction)] = entry
+
+    def set_allocator_suppress(self, cohorts: frozenset[str]) -> None:
+        """Install the session's allocator SUPPRESS cohort set (loaded once
+        at session open from the ledger — never per scan)."""
+        self._allocator_suppress = cohorts
+        if cohorts:
+            logger.info(
+                "allocator suppress set loaded ({}): {}",
+                "ARMED" if config.ALLOCATOR_ARMED else "dark",
+                sorted(cohorts),
+            )
 
     def reset_day(self) -> None:
         self._last_fire.clear()
@@ -471,6 +575,7 @@ class GateChain:
         self._last_base_emission.clear()
         self._group_dir_this_scan.clear()
         self._setup_dir_this_scan.clear()
+        self._last_entry.clear()
 
     @property
     def suppressions(self) -> list[Suppression]:
@@ -545,14 +650,10 @@ class GateChain:
             )
         return None
 
-    @staticmethod
-    def _spread_gate(
-        signal: IndiaSignal,
-        ctx: IndiaContext,
-        session_state: SessionState,
-        now: datetime,
-    ) -> str | None:
-        return None
+    # NOTE: the Phase-1 spread gate stub was removed (Session 21). The Fyers
+    # lite-mode tick carries no bid/ask, so an honest spread gate has no
+    # input — and CLAUDE.md bans always-pass stubs. Re-add when Phase 2's
+    # depth-mode data exists.
 
     def _cooldown_gate(
         self,
@@ -829,6 +930,29 @@ class GateChain:
         return None
 
     @staticmethod
+    def _phase_affinity_gate(
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        session_state: SessionState,
+        now: datetime,
+    ) -> str | None:
+        """Doctrine §3 ∧ measured evidence: suppress a setup FAMILY in a
+        session PHASE only when the pair is on the owner-approved blocklist
+        (INDIA_PHASE_BLOCKLIST — populated from edge-matrix cohorts with
+        n ≥ min-sample AND negative net EV, never assumption alone).
+        Default OFF and empty — a targeted blocklist, not a time curfew."""
+        if not config.PHASE_GATE_ENABLED or not _PHASE_BLOCKLIST:
+            return None
+        family = SETUP_FAMILY.get(signal.setup_class, SetupFamily.NEUTRAL)
+        phase = classify_session_phase(ctx.scan_time_ist)
+        if (family, phase) in _PHASE_BLOCKLIST:
+            return (
+                f"{family} setups blocked in {phase}"
+                f" (phase-affinity blocklist, measured-negative cohort)"
+            )
+        return None
+
+    @staticmethod
     def _confidence_floor_gate(
         confidence: float, is_expiry_day: bool = False
     ) -> str | None:
@@ -843,6 +967,19 @@ class GateChain:
 
 
 # ── Scanner ──────────────────────────────────────────────────────────
+
+def _signed_extension(
+    entry: float, anchor: float, atr: float, direction: str
+) -> float:
+    """Signed distance of *entry* from *anchor* in ATRs — positive when the
+    entry sits beyond the anchor in the trade's direction (i.e. the trade is
+    chasing an extended move), negative when it enters on the cheap side.
+    0.0 when either reference is unavailable."""
+    if anchor <= 0 or atr <= 0 or entry <= 0:
+        return 0.0
+    raw = (entry - anchor) / atr
+    return round(raw if direction == Direction.LONG else -raw, 3)
+
 
 def _build_evaluators() -> list[Evaluator]:
     """Instantiate all 14 evaluators."""
@@ -881,6 +1018,18 @@ class IndiaScanner:
         self._scorer = IndiaSignalScoringEngine()
         self._gates = GateChain()
         self._scan_count = 0
+        # Whole-market direction transition tracker (Session 21): when the
+        # label last changed, so each emitted signal can carry its bias age
+        # (a bias that latched 5 minutes ago is a different trade from one
+        # 3 hours old). Reset with the day.
+        self._md_label: str | None = None
+        self._md_since: datetime | None = None
+        # Per-evaluator exception counter (Session 21). The blanket except
+        # around evaluate() keeps one broken evaluator from killing the scan,
+        # but before this counter a persistently-raising evaluator was
+        # silently absent with only a debug-level trail. Surfaced via the
+        # pulse payload — never silence a detected problem.
+        self._eval_errors: Counter[str] = Counter()
 
     @property
     def gates(self) -> GateChain:
@@ -894,6 +1043,10 @@ class IndiaScanner:
         """Install the session's measured-edge lookup into the scorer (loaded
         once at session open — see main.py)."""
         self._scorer.set_edge_index(index)
+
+    def set_allocator_suppress(self, cohorts: frozenset[str]) -> None:
+        """Install the session's allocator SUPPRESS set (see GateChain)."""
+        self._gates.set_allocator_suppress(cohorts)
 
     def scan(
         self,
@@ -933,6 +1086,12 @@ class IndiaScanner:
             for base, ctx in contexts.items()
             if base in config.INDEX_BASES
         }
+        # Shadow v2 biases (Session 21) — stamped per signal, never gated on.
+        index_biases_v2 = {
+            base: dependency.market_bias_v2(ctx)
+            for base, ctx in contexts.items()
+            if base in config.INDEX_BASES
+        }
         for base, ctx in contexts.items():
             for proxy in dependency.proxy_candidates(base):
                 bias = index_biases.get(proxy)
@@ -945,6 +1104,14 @@ class IndiaScanner:
         # onto every signal below so outcomes can be sliced by tape regime.
         market_ctx = MarketContext.build(
             {b: c for b, c in contexts.items() if b in config.INDEX_BASES}, now
+        )
+        if market_ctx.market_direction != self._md_label:
+            self._md_label = market_ctx.market_direction
+            self._md_since = now
+        bias_age_min = (
+            (now - self._md_since).total_seconds() / 60.0
+            if self._md_since is not None
+            else -1.0
         )
         for ctx in contexts.values():
             ctx.market_direction = market_ctx.market_direction
@@ -966,8 +1133,12 @@ class IndiaScanner:
                 try:
                     candidate = ev.evaluate(ctx)
                 except Exception:
+                    self._eval_errors[ev.setup_class] += 1
                     logger.opt(exception=True).warning(
-                        "evaluator {} raised on {}", ev.setup_class, base
+                        "evaluator {} raised on {} ({} errors today)",
+                        ev.setup_class,
+                        base,
+                        self._eval_errors[ev.setup_class],
                     )
                     continue
 
@@ -987,6 +1158,27 @@ class IndiaScanner:
                     continue
 
                 confidence = self._scorer.score(candidate, ctx)
+                # Scoring v2 (Session 21): computed for every scored
+                # candidate; SHADOW persists it for the calibration window,
+                # ACTIVE (owner sign-off) makes it the confidence that
+                # feeds the floor, tiering, and delivery. v1 always rides
+                # in the component JSON for rollback comparison.
+                if config.SCORING_V2_SHADOW or config.SCORING_V2_ACTIVE:
+                    v2, comps = self._scorer.score_v2(
+                        candidate,
+                        ctx,
+                        session_phase=market_ctx.session_phase,
+                        bias_age_min=bias_age_min,
+                        dup_index=self._gates.emitted_count(
+                            base, candidate.direction
+                        )
+                        + 1,
+                    )
+                    comps["v1"] = round(confidence, 2)
+                    candidate.confidence_v2 = v2
+                    candidate.score_components_v2 = json.dumps(comps)
+                    if config.SCORING_V2_ACTIVE:
+                        confidence = v2
                 candidate.confidence = confidence
                 candidate.tier = tier_for(confidence)
 
@@ -1034,9 +1226,42 @@ class IndiaScanner:
             candidate.vix_regime = market_ctx.vix_regime
             candidate.expiry_date = self._expiry.get_contract_expiry_date(now)
             candidate.days_to_expiry = self._expiry.days_to_expiry(now)
+            # Truth telemetry (Session 21): signed extension of entry from
+            # the session anchors (in ATRs, positive = extended in the
+            # signal's direction), bias freshness, duplicate ordinal. These
+            # are the exhaustion/churn dimensions the edge matrix slices —
+            # measured first, gated later only with evidence.
+            candidate.extension_vwap_atr = _signed_extension(
+                candidate.entry, ctx.session_vwap, ctx.atr14_5m,
+                candidate.direction,
+            )
+            candidate.extension_ema21_atr = _signed_extension(
+                candidate.entry, ctx.ema21_5m, ctx.atr14_5m,
+                candidate.direction,
+            )
+            candidate.bias_age_min = round(bias_age_min, 1)
+            candidate.dup_index = (
+                self._gates.emitted_count(ctx.base, candidate.direction) + 1
+            )
+            # Shadow direction v2 (never gated on until the forward window
+            # proves it beats v1): whole-market label + this base's proxy
+            # index bias under the de-lagged classifier.
+            candidate.market_direction_v2 = market_ctx.market_direction_v2
+            candidate.index_bias_v2 = next(
+                (
+                    index_biases_v2[p]
+                    for p in dependency.proxy_candidates(ctx.base)
+                    if p in index_biases_v2
+                ),
+                dependency.NEUTRAL,
+            )
 
             self._gates.record_emission(
-                candidate.setup_class, ctx.base, candidate.direction, now
+                candidate.setup_class,
+                ctx.base,
+                candidate.direction,
+                now,
+                entry=candidate.entry,
             )
             emitted.append(candidate)
 
@@ -1051,6 +1276,14 @@ class IndiaScanner:
 
         return emitted
 
+    @property
+    def evaluator_errors(self) -> dict[str, int]:
+        """Exceptions swallowed per evaluator today (pulse/ops surface)."""
+        return dict(self._eval_errors)
+
     def reset_day(self) -> None:
         self._gates.reset_day()
         self._scan_count = 0
+        self._md_label = None
+        self._md_since = None
+        self._eval_errors.clear()

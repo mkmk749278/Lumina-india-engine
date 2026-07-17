@@ -101,7 +101,19 @@ CREATE TABLE IF NOT EXISTS india_session_summary (
 # ADD COLUMN IF NOT EXISTS, so we add each only when absent — an existing prod
 # DB (with rows) is upgraded in place without dropping history.
 _MIGRATIONS: dict[str, list[tuple[str, str]]] = {
-    "india_signal_outcomes": [("pct", "REAL NOT NULL DEFAULT 0")],
+    "india_signal_outcomes": [
+        ("pct", "REAL NOT NULL DEFAULT 0"),
+        # Outcome-ledger truth (Session 21): max favourable / adverse
+        # excursion (% of entry, post-trigger), bars walked to resolution,
+        # which timeframe resolved it, and whether the resolving candle was
+        # an ambiguous both-levels tie (the 5m-walk artifact being measured
+        # away). NULL on pre-migration rows.
+        ("mfe_pct", "REAL"),
+        ("mae_pct", "REAL"),
+        ("bars_to_resolve", "INTEGER"),
+        ("resolution_tf", "TEXT"),
+        ("ambiguous_tie", "INTEGER"),
+    ],
     "india_session_summary": [
         ("total_pct", "REAL NOT NULL DEFAULT 0"),
         ("avg_pct", "REAL NOT NULL DEFAULT 0"),
@@ -111,15 +123,30 @@ _MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("tp1_be_count", "INTEGER NOT NULL DEFAULT 0"),
         ("tp2_count", "INTEGER NOT NULL DEFAULT 0"),
         ("tp1_expired_count", "INTEGER NOT NULL DEFAULT 0"),
+        # Entry-trigger plan (Session 21): LEVEL entries that never filled.
+        ("not_triggered_count", "INTEGER NOT NULL DEFAULT 0"),
     ],
     # Two-target plan: when the runner is armed (TP1 banked) — lets a banked
     # TP1 survive an engine restart instead of silently re-racing SL vs TP1.
     # Market-context stamp (Phase 1): tape regime at emit, for the edge matrix.
+    # Session 21: entry-trigger state (entry_type/triggered_at), truth
+    # telemetry stamped at emission (extension/bias-age/dup), and the shadow
+    # scoring + direction columns (v2 measured alongside v1 before any flip).
     "india_signals": [
         ("tp1_touched_at", "TEXT"),
         ("market_direction", "TEXT"),
         ("session_phase", "TEXT"),
         ("vix_regime", "TEXT"),
+        ("entry_type", "TEXT"),
+        ("triggered_at", "TEXT"),
+        ("extension_vwap_atr", "REAL"),
+        ("extension_ema21_atr", "REAL"),
+        ("bias_age_min", "REAL"),
+        ("dup_index", "INTEGER"),
+        ("confidence_v2", "REAL"),
+        ("score_components_v2", "TEXT"),
+        ("market_direction_v2", "TEXT"),
+        ("index_bias_v2", "TEXT"),
     ],
 }
 
@@ -181,10 +208,14 @@ async def insert_signal(sig: IndiaSignal) -> None:
             atr_at_entry, vix_at_entry, pcr_at_entry,
             market_direction, session_phase, vix_regime,
             expiry_date, days_to_expiry, tp2,
-            dispatch_timestamp, suppression_reason
+            dispatch_timestamp, suppression_reason,
+            entry_type, extension_vwap_atr, extension_ema21_atr,
+            bias_age_min, dup_index,
+            confidence_v2, score_components_v2,
+            market_direction_v2, index_bias_v2
         ) VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         """,
         (
@@ -218,6 +249,15 @@ async def insert_signal(sig: IndiaSignal) -> None:
             sig.tp2,
             str(sig.dispatch_timestamp),
             sig.suppression_reason,
+            sig.entry_type,
+            sig.extension_vwap_atr,
+            sig.extension_ema21_atr,
+            sig.bias_age_min,
+            sig.dup_index,
+            sig.confidence_v2,
+            sig.score_components_v2,
+            sig.market_direction_v2,
+            sig.index_bias_v2,
         ),
     )
     await db.commit()
@@ -333,6 +373,17 @@ async def mark_tp1_touched(signal_id: str, touched_at: datetime) -> None:
     await db.commit()
 
 
+async def mark_triggered(signal_id: str, triggered_at: datetime) -> None:
+    """Persist a LEVEL entry's fill (entry-trigger plan) across restarts."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE india_signals SET triggered_at = ?"
+        " WHERE signal_id = ? AND triggered_at IS NULL",
+        (str(triggered_at), signal_id),
+    )
+    await db.commit()
+
+
 async def insert_outcome(
     signal_id: str,
     outcome: str,
@@ -340,15 +391,33 @@ async def insert_outcome(
     points: float,
     pct: float,
     resolved_at: datetime,
+    mfe_pct: float = 0.0,
+    mae_pct: float = 0.0,
+    bars_to_resolve: int = 0,
+    resolution_tf: str = "",
+    ambiguous_tie: bool = False,
 ) -> None:
     db = await get_db()
     await db.execute(
         """
         INSERT OR IGNORE INTO india_signal_outcomes
-            (signal_id, outcome, exit_price, points, pct, resolved_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (signal_id, outcome, exit_price, points, pct, resolved_at,
+             mfe_pct, mae_pct, bars_to_resolve, resolution_tf, ambiguous_tie)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (signal_id, outcome, exit_price, points, pct, str(resolved_at)),
+        (
+            signal_id,
+            outcome,
+            exit_price,
+            points,
+            pct,
+            str(resolved_at),
+            mfe_pct,
+            mae_pct,
+            bars_to_resolve,
+            resolution_tf,
+            1 if ambiguous_tie else 0,
+        ),
     )
     await db.commit()
 
@@ -366,8 +435,11 @@ async def get_outcomes(date: str | None = None, limit: int = 100) -> list[dict]:
         f"""
         SELECT o.signal_id, o.outcome, o.exit_price, o.points, o.pct,
                o.resolved_at,
+               o.mfe_pct, o.mae_pct, o.bars_to_resolve,
+               o.resolution_tf, o.ambiguous_tie,
                s.symbol, s.base, s.direction, s.setup_class, s.tier,
-               s.entry, s.sl, s.tp1, s.tp2, s.created_at AS emitted_at
+               s.entry, s.sl, s.tp1, s.tp2, s.entry_type,
+               s.created_at AS emitted_at
         FROM india_signal_outcomes o
         LEFT JOIN india_signals s ON s.signal_id = o.signal_id
         {where}
@@ -390,7 +462,11 @@ async def get_resolved_signals(days: int = 30) -> list[dict]:
         SELECT s.setup_class, s.direction, s.tier,
                s.session_phase, s.market_direction, s.vix_regime,
                s.regime_60m, s.confidence,
-               o.outcome, o.pct
+               s.entry_type, s.tp2, s.dup_index,
+               s.extension_vwap_atr, s.extension_ema21_atr,
+               s.confidence_v2, s.market_direction_v2,
+               o.outcome, o.pct, o.mfe_pct, o.mae_pct,
+               o.resolution_tf, o.ambiguous_tie
         FROM india_signal_outcomes o
         JOIN india_signals s ON s.signal_id = o.signal_id
         WHERE o.created_at >= DATE('now', 'localtime', ?)
@@ -440,6 +516,9 @@ async def write_session_summary() -> dict:
     )
     gates = {str(r[0]): int(r[1]) for r in await cursor.fetchall()}
 
+    # NOT_TRIGGERED rows are cancelled LEVEL entries that never filled — no
+    # trade happened, so points/pct aggregates run over FILLED outcomes only
+    # (their pct is 0 by construction, but they must not dilute avg_pct).
     cursor = await db.execute(
         f"""
         SELECT
@@ -448,10 +527,11 @@ async def write_session_summary() -> dict:
             COALESCE(SUM(CASE WHEN outcome = 'EXPIRED' THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(points), 0),
             COALESCE(SUM(pct), 0),
-            COALESCE(AVG(pct), 0),
+            COALESCE(AVG(CASE WHEN outcome != 'NOT_TRIGGERED' THEN pct END), 0),
             COALESCE(SUM(CASE WHEN outcome = 'TP1_BE' THEN 1 ELSE 0 END), 0),
             COALESCE(SUM(CASE WHEN outcome = 'TP2_HIT' THEN 1 ELSE 0 END), 0),
-            COALESCE(SUM(CASE WHEN outcome = 'TP1_EXPIRED' THEN 1 ELSE 0 END), 0)
+            COALESCE(SUM(CASE WHEN outcome = 'TP1_EXPIRED' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN outcome = 'NOT_TRIGGERED' THEN 1 ELSE 0 END), 0)
         FROM india_signal_outcomes
         WHERE {_TODAY.format(col='created_at')}
         """
@@ -474,6 +554,7 @@ async def write_session_summary() -> dict:
         "tp1_be_count": int(oc_row[6]),
         "tp2_count": int(oc_row[7]),
         "tp1_expired_count": int(oc_row[8]),
+        "not_triggered_count": int(oc_row[9]),
         # total_points kept for continuity, but % is the honest cross-instrument
         # measure — summing points across a 46-base universe is meaningless.
         "total_points": round(float(oc_row[3]), 2),
@@ -487,8 +568,8 @@ async def write_session_summary() -> dict:
             (date, signal_count, a_plus_count, a_count, b_count, avg_confidence,
              total_suppressed, gates_fired, tp1_count, sl_count,
              expired_count, tp1_be_count, tp2_count, tp1_expired_count,
-             total_points, total_pct, avg_pct)
-        VALUES (DATE('now', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             not_triggered_count, total_points, total_pct, avg_pct)
+        VALUES (DATE('now', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(date) DO UPDATE SET
             signal_count = excluded.signal_count,
             a_plus_count = excluded.a_plus_count,
@@ -503,6 +584,7 @@ async def write_session_summary() -> dict:
             tp1_be_count = excluded.tp1_be_count,
             tp2_count = excluded.tp2_count,
             tp1_expired_count = excluded.tp1_expired_count,
+            not_triggered_count = excluded.not_triggered_count,
             total_points = excluded.total_points,
             total_pct = excluded.total_pct,
             avg_pct = excluded.avg_pct
@@ -521,6 +603,7 @@ async def write_session_summary() -> dict:
             summary["tp1_be_count"],
             summary["tp2_count"],
             summary["tp1_expired_count"],
+            summary["not_triggered_count"],
             summary["total_points"],
             summary["total_pct"],
             summary["avg_pct"],
@@ -586,7 +669,7 @@ async def get_signals_today_for_gates() -> list[dict]:
     db = await get_db()
     cursor = await db.execute(
         """
-        SELECT setup_class, base, direction,
+        SELECT setup_class, base, direction, entry,
                (strftime('%s', 'now', 'localtime') - strftime('%s', created_at))
                    AS age_sec
         FROM india_signals

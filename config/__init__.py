@@ -300,6 +300,70 @@ TP1_EXIT_FRACTION: float = _safe_float("INDIA_TP1_EXIT_FRACTION", 0.5)
 # "scratch" runner nets ~0 after STT instead of a hidden loss; False = entry.
 BE_COST_BUFFER: bool = _safe_bool("INDIA_BE_COST_BUFFER", True)
 
+# How the mapped-structural-level TP2 is picked inside the band:
+#   "nearest"         — legacy: level nearest the ENTRY (pins TP2 to the band
+#                       bottom, ~1.5x TP1 dist; live ledger showed TP2_HIT
+#                       paying LESS than a marked-to-close TP1_EXPIRED)
+#   "target_anchored" — level nearest the R-multiple anchor
+#                       (entry + TP2_DIST_MULT x TP1 distance), so a mapped
+#                       TP2 stays a genuine stretch target
+TP2_SELECT_MODE: str = _safe_str("INDIA_TP2_SELECT_MODE", "target_anchored")
+
+# --- outcome-ledger truth (Session 21) --------------------------------------
+# Entry-trigger state machine: signals whose printed entry is a resting LEVEL
+# (ORB / VSB / BDS breakout entries) only start their SL/TP race once a candle
+# actually trades through the entry. Before this, the monitor assumed every
+# signal filled at its printed entry at emission — for breakout setups that
+# entry is systematically better than market, so the ledger credited fills
+# nobody could have had. Signals whose level is never touched resolve
+# NOT_TRIGGERED (excluded from win/EV denominators — no fill, no trade).
+ENTRY_TRIGGER_ENABLED: bool = _safe_bool("INDIA_ENTRY_TRIGGER_ENABLED", True)
+# A LEVEL entry left untouched this many minutes after emission is cancelled
+# (NOT_TRIGGERED) — a breakout retest that hasn't come in half an hour is a
+# different market, not a pending fill.
+ENTRY_TRIGGER_EXPIRY_MIN: int = _safe_int("INDIA_ENTRY_TRIGGER_EXPIRY_MIN", 30)
+# Timeframe the outcome monitor walks ("1m" or "5m"). Median SL distance in
+# the live window (~0.20%) fits INSIDE one 5m bar's range, so the 5m walk's
+# same-candle SL+TP tie (conservative → SL) was manufacturing SL_HITs. 1m
+# collapses the tie population; the monitor falls back to 5m per signal when
+# 1m coverage doesn't reach back to its registration (e.g. mid-session
+# restart — the 1m buffer builds from live ticks only).
+OUTCOME_RESOLUTION_TF: str = _safe_str("INDIA_OUTCOME_RESOLUTION_TF", "1m")
+# Re-classify each symbol's daily regime intraday every N minutes, folding
+# today's RUNNING daily bar into the seeded series (B4 fix: the seed-time
+# label froze all session, misdirecting the chop/regime-setup gates on days
+# that developed a trend after the open). 0 (default) = legacy frozen label.
+DAILY_REGIME_REFRESH_MIN: int = _safe_int("INDIA_DAILY_REGIME_REFRESH_MIN", 0)
+# Scoring v2 (Session 21). SHADOW computes + persists confidence_v2 and its
+# component breakdown on every emitted signal (pure measurement). ACTIVE
+# switches the confidence that feeds the floor gate, tiering, and subscriber
+# delivery to v2 — OWNER SIGN-OFF, flipped only after ≥10 forward sessions
+# show v2 buckets monotonic (higher score ⇒ better realised EV) while v1's
+# stay inverted. Rollback = flip ACTIVE off; v1 is always still computed.
+SCORING_V2_SHADOW: bool = _safe_bool("INDIA_SCORING_V2_SHADOW", True)
+SCORING_V2_ACTIVE: bool = _safe_bool("INDIA_SCORING_V2_ACTIVE", False)
+
+# --- emission discipline (Session 21 — ALL default OFF / inert) -------------
+# Phase-affinity gate: suppress setup-FAMILY x session-PHASE pairs that are
+# BOTH doctrine-contraindicated (§3) AND measured-negative in the edge matrix
+# with n ≥ ALLOCATOR_MIN_SAMPLE. CSV of FAMILY:PHASE pairs, e.g.
+# "TREND:POWER_HOUR,BREAKOUT:MIDDAY_CHOP". OWNER SIGN-OFF to populate/enable —
+# doctrine proposes, the ledger confirms, never a blanket time cut (the 07-13
+# replay showed midday BREAKOUTS were the best cohort).
+PHASE_GATE_ENABLED: bool = _safe_bool("INDIA_PHASE_AFFINITY_GATE_ENABLED", False)
+PHASE_BLOCKLIST: str = _safe_str("INDIA_PHASE_BLOCKLIST", "")
+# Duplicate policy: a same (base, direction) re-fire must print an entry at
+# least this many ATRs away from the previous emission's entry — a re-fire on
+# the same bar cluster is an echo, not new structure. 0.0 = off.
+DUP_MIN_ENTRY_MOVE_ATR: float = _safe_float("INDIA_DUP_MIN_ENTRY_MOVE_ATR", 0.0)
+# Allocator arming: when true, (setup, direction) cohorts the allocator marks
+# SUPPRESS (n ≥ min-sample AND ev ≤ suppress threshold — never HOLD, never
+# INSUFFICIENT_DATA) are suppressed at emission. Self-reversing: verdicts are
+# re-derived from the ledger at every session open, so a cohort that heals
+# re-enables itself. OWNER SIGN-OFF; while false the engine dark-logs every
+# would-suppress so the owner can watch the verdicts track outcomes first.
+ALLOCATOR_ARMED: bool = _safe_bool("INDIA_ALLOCATOR_ARMED", False)
+
 # Minimum viable TP1 distance for stock bases, % of entry (IB11 equivalent).
 MIN_SCALP_PCT: float = _safe_float("INDIA_MIN_SCALP_PCT", 0.10)
 

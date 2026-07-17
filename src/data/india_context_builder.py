@@ -14,6 +14,8 @@ from src.data.india_macro_store import IndiaMacroStore
 from src.data.india_market_data import IndiaMarketData
 from src.data.india_oi_store import IndiaOIStore
 from src.data.india_tick_store import IndiaTickStore
+from src.indicators import ema
+from src.market.candle import Candle
 from src.market_profile import tod_adjusted_volume_ratio
 from src.regime import Regime, classify
 from src.session.expiry_manager import ExpiryManager
@@ -43,6 +45,9 @@ class IndiaContextBuilder:
         self._prev_low = prev_day_low or {}
         self._prev_close = prev_day_close or {}
         self._daily_regime: dict[str, Regime] = {}
+        # Seeded daily series (pre-today) per symbol — the substrate for the
+        # optional intraday daily-regime refresh (B4 fix, default OFF).
+        self._daily_candles: dict[str, list[Candle]] = {}
 
     def set_prev_day(
         self, symbol: str, high: float, low: float, close: float
@@ -53,8 +58,45 @@ class IndiaContextBuilder:
 
     def set_daily_regime(self, symbol: str, regime: Regime) -> None:
         """Set the daily-timeframe regime, classified from the feed's daily
-        history fetch at seed time (a daily regime does not move intraday)."""
+        history fetch at seed time."""
         self._daily_regime[symbol] = regime
+
+    def set_daily_candles(self, symbol: str, candles: list) -> None:
+        """Retain the seeded daily series (pre-today) so the intraday
+        daily-regime refresh can fold today's running bar without a fetch."""
+        self._daily_candles[symbol] = list(candles)
+
+    def refresh_daily_regime(self, symbol: str, now: datetime) -> Regime | None:
+        """Re-classify the daily regime with today's RUNNING daily bar folded
+        in (Session 21, B4 fix — default OFF via
+        ``INDIA_DAILY_REGIME_REFRESH_MIN=0``).
+
+        The seed-time label froze all session: a range-morning that develops
+        into a trend afternoon (or vice versa) misdirected the chop /
+        regime-setup gates for the whole day. Zero I/O — the running bar is
+        assembled from the tick store's day state. Returns the new regime, or
+        None when the inputs aren't available (label left unchanged)."""
+        hist = self._daily_candles.get(symbol)
+        if not hist:
+            return None
+        day_open = self._tick.get_day_open(symbol)
+        hi = self._tick.get_intraday_high(symbol)
+        lo = self._tick.get_intraday_low(symbol)
+        last = self._tick.get_last_price(symbol)
+        if min(day_open, hi, lo, last) <= 0:
+            return None
+        ist_now = now.astimezone(IST) if now.tzinfo else IST.localize(now)
+        today_bar = Candle(
+            ts=ist_now.replace(hour=0, minute=0, second=0, microsecond=0),
+            open=day_open,
+            high=hi,
+            low=lo,
+            close=last,
+            volume=0.0,
+        )
+        regime = classify([*hist, today_bar])
+        self._daily_regime[symbol] = regime
+        return regime
 
     def build(self, symbol: str, base: str, now: datetime) -> IndiaContext:
         """Build a context snapshot for *symbol* at time *now* (IST)."""
@@ -114,6 +156,15 @@ class IndiaContextBuilder:
         if session_vwap > 0:
             extra_levels.append(session_vwap)
 
+        # EMA21 on 5m closes — the second extension anchor (0.0 until 21
+        # bars exist). Pure in-memory arithmetic, no I/O.
+        ema21_5m = 0.0
+        if len(candles_5m) >= 21:
+            try:
+                ema21_5m = ema([c.close for c in candles_5m], 21)
+            except ValueError:
+                ema21_5m = 0.0
+
         return IndiaContext(
             base=base,
             symbol=symbol,
@@ -149,6 +200,8 @@ class IndiaContextBuilder:
             bar_elapsed_fraction=bar_fraction,
             key_levels_extra=extra_levels,
             fii_dii_net_cr=self._macro.get_net_cr() if self._macro else 0.0,
+            session_vwap=session_vwap,
+            ema21_5m=ema21_5m,
         )
 
     @staticmethod
