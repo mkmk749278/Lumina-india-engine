@@ -240,6 +240,11 @@ class IndiaContext:
     # Expiry-day flag + max-pain strike (EXPIRY_GAMMA_SQUEEZE).
     is_expiry_day: bool = False
     max_pain_strike: float | None = None
+    # Option-chain OI walls (index bases): heaviest call-OI strike = resistance,
+    # heaviest put-OI strike = support. First-class S/R for level confluence and
+    # structural targets. None on stock bases / before the first chain poll.
+    call_oi_wall: float | None = None
+    put_oi_wall: float | None = None
     # 15m volume average for MA_CROSS volume gate.
     volume_avg_15m_20: float = 0.0
     # Time-of-day normalised + building-bar pro-rated volume ratio for the

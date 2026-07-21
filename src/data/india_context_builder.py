@@ -196,6 +196,8 @@ class IndiaContextBuilder:
             scan_time_ist=scan_time,
             is_expiry_day=is_expiry,
             max_pain_strike=self._mkt.get_max_pain(base),
+            call_oi_wall=self._mkt.get_oi_walls(base)[0],
+            put_oi_wall=self._mkt.get_oi_walls(base)[1],
             last_tick_age_sec=last_tick_age,
             bar_elapsed_fraction=bar_fraction,
             key_levels_extra=extra_levels,

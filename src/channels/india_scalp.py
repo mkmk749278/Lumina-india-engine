@@ -47,6 +47,18 @@ def _min_trigger_range(ctx: IndiaContext) -> float:
     return ctx.atr14_5m * config.MIN_TRIGGER_RANGE_ATR
 
 
+def _oi_levels(ctx: IndiaContext) -> list[float]:
+    """Option-chain S/R for index bases (G5): the call-OI wall (resistance),
+    put-OI wall (support) and max-pain strike — the levels NSE index price
+    pins to and reverses at. Empty on stock bases / before the first chain
+    poll (all None)."""
+    return [
+        lvl
+        for lvl in (ctx.call_oi_wall, ctx.put_oi_wall, ctx.max_pain_strike)
+        if lvl is not None and lvl > 0
+    ]
+
+
 def _derive_tp2(ctx: IndiaContext, entry: float, tp1: float, direction: str) -> float:
     """Runner target beyond TP1 (owner-directed two-target plan, Session 18).
 
@@ -65,6 +77,7 @@ def _derive_tp2(ctx: IndiaContext, entry: float, tp1: float, direction: str) -> 
     levels: list[float] = [
         ctx.prev_day_high, ctx.prev_day_low, ctx.prev_day_close,
         *ctx.key_levels_extra,
+        *_oi_levels(ctx),  # option-chain walls + max-pain (index bases)
     ]
     if ctx.opening_range_locked:
         if ctx.opening_range_high is not None:
@@ -125,6 +138,7 @@ def _structural_tp1(
     levels: list[float] = [
         ctx.prev_day_high, ctx.prev_day_low, ctx.prev_day_close,
         *ctx.key_levels_extra,  # session VWAP et al.
+        *_oi_levels(ctx),  # option-chain walls + max-pain (index bases)
     ]
     if ctx.opening_range_locked:
         if ctx.opening_range_high is not None:

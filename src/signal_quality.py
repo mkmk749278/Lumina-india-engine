@@ -420,6 +420,11 @@ class IndiaSignalScoringEngine:
             base_round,
             base_round + step,
             *ctx.key_levels_extra,
+            # Option-chain OI walls + max-pain are first-class NSE index S/R
+            # (index bases only; None on stocks / before the first chain poll).
+            ctx.call_oi_wall,
+            ctx.put_oi_wall,
+            ctx.max_pain_strike,
         ]
         confluences = sum(
             1 for lvl in key_levels if lvl is not None and abs(entry - lvl) <= tolerance
