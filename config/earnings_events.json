@@ -1,0 +1,11 @@
+{
+  "_comment": "Per-stock earnings (results) blackout dates for G8. The earnings-blackout gate suppresses signals on STOCK_BASES within [date-DAYS_BEFORE, date+DAYS_AFTER] of a results date. Index bases are never blacked out. Keys are bases (upper-case, as in STOCK_BASES); values are IST results dates. UNVERIFIED until populated from an authoritative NSE results calendar — set verified=true once populated. Refresh each quarter (Q1 Jul, Q2 Oct, Q3 Jan, Q4 Apr). Point INDIA_EARNINGS_EVENTS_FILE at a live source to replace this file.",
+  "_source": "NSE corporate results calendar (populate per quarter)",
+  "_example": {
+    "INFY": ["2026-07-16"],
+    "TCS": ["2026-07-09"],
+    "RELIANCE": ["2026-07-18", "2026-10-17"]
+  },
+  "verified": false,
+  "earnings": {}
+}

@@ -777,3 +777,21 @@ NSE_HOLIDAYS_FILE: str = _safe_str(
 MACRO_EVENTS_FILE: str = _safe_str(
     "MACRO_EVENTS_FILE", str(_CONFIG_DIR / "macro_events.json")
 )
+# Per-stock earnings blackout (G8): a single-stock F&O signal fired into its own
+# results window is a coin-flip on the print. Index bases have no single
+# earnings date and are never blacked out. File is env-pointable at a live NSE
+# results calendar; unavailable/empty -> inert (no blackout, never fabricated).
+EARNINGS_EVENTS_FILE: str = _safe_str(
+    "INDIA_EARNINGS_EVENTS_FILE", str(_CONFIG_DIR / "earnings_events.json")
+)
+EARNINGS_BLACKOUT_ENABLED: bool = _safe_bool(
+    "INDIA_EARNINGS_BLACKOUT_ENABLED", True
+)
+# Blackout window around the results date, inclusive: pre-print drift and the
+# post-print gap are both un-tradeable on a 5m scalp.
+EARNINGS_BLACKOUT_DAYS_BEFORE: int = _safe_int(
+    "INDIA_EARNINGS_BLACKOUT_DAYS_BEFORE", 1
+)
+EARNINGS_BLACKOUT_DAYS_AFTER: int = _safe_int(
+    "INDIA_EARNINGS_BLACKOUT_DAYS_AFTER", 1
+)
