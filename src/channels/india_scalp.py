@@ -91,6 +91,60 @@ def _derive_tp2(ctx: IndiaContext, entry: float, tp1: float, direction: str) -> 
     return anchor
 
 
+def _structural_tp1(
+    ctx: IndiaContext,
+    direction: str,
+    entry: float,
+    sl_dist: float,
+    fallback_rr: float,
+) -> float:
+    """Structure-anchored TP1 for the fixed-R-multiple breakout setups (G2).
+
+    A fixed 2R target ignores where price actually stalls: on NSE the next
+    real level (PDH/PDL/PDC, locked opening range, session VWAP, the round-
+    number grid) is where a breakout runs to and reverses. A far 2R target
+    then EXPIRES unresolved where a nearer structural one would have banked.
+
+    Returns the NEAREST structural level that sits in the ``[MIN_RR, fallback_rr]``
+    R-band beyond entry — reachable *and* still clearing the cost floor — else
+    the ``fallback_rr`` R-multiple (exact prior behaviour). TP1 therefore never
+    moves *past* the old 2R distance and never below the min-RR floor: it only
+    pulls an unreachable target in to real structure. Inert when the flag is
+    off or the geometry is degenerate.
+    """
+    fallback = (
+        entry + sl_dist * fallback_rr
+        if direction == Direction.LONG
+        else entry - sl_dist * fallback_rr
+    )
+    if not config.STRUCTURAL_TP1_ENABLED or entry <= 0 or sl_dist <= 0:
+        return fallback
+    sign = 1.0 if direction == Direction.LONG else -1.0
+    lo = sl_dist * config.STRUCTURAL_TP1_MIN_RR
+    hi = sl_dist * fallback_rr
+    levels: list[float] = [
+        ctx.prev_day_high, ctx.prev_day_low, ctx.prev_day_close,
+        *ctx.key_levels_extra,  # session VWAP et al.
+    ]
+    if ctx.opening_range_locked:
+        if ctx.opening_range_high is not None:
+            levels.append(ctx.opening_range_high)
+        if ctx.opening_range_low is not None:
+            levels.append(ctx.opening_range_low)
+    # Round-number grid: the next few steps beyond entry in the trade direction.
+    step = config.round_step_for(ctx.base, entry)
+    if step > 0:
+        base_round = round(entry / step) * step
+        for k in range(-1, 4):
+            levels.append(base_round + k * step)
+    mapped = [lvl for lvl in levels if lvl > 0 and lo <= sign * (lvl - entry) <= hi]
+    if not mapped:
+        return fallback
+    # Nearest qualifying level to the entry — the first place price stalls that
+    # still pays for the round trip.
+    return min(mapped, key=lambda lvl: abs(lvl - entry))
+
+
 def _near_key_level(ctx: IndiaContext, price: float) -> str | None:
     """Name of the structural key level within LSR_KEY_LEVEL_ATR_TOL x ATR of
     *price*, else None.
@@ -384,11 +438,7 @@ class OpeningRangeBreakout(Evaluator):
         sl_pct = sl_dist / entry * 100.0
         if not (config.ORB_MIN_SL_PCT <= sl_pct <= config.ORB_MAX_SL_PCT):
             return None
-        tp1 = (
-            entry + sl_dist * config.ORB_TP_RR
-            if direction == Direction.LONG
-            else entry - sl_dist * config.ORB_TP_RR
-        )
+        tp1 = _structural_tp1(ctx, direction, entry, sl_dist, config.ORB_TP_RR)
         tp1_pct = abs(tp1 - entry) / entry * 100.0
         return _make_signal(
             ctx,
@@ -450,11 +500,7 @@ def _volume_breakout(
     sl_pct = sl_dist / entry * 100.0
     if not (config.VSB_MIN_SL_PCT <= sl_pct <= config.VSB_MAX_SL_PCT):
         return None
-    tp1 = (
-        entry + sl_dist * config.VSB_TP_RR
-        if direction == Direction.LONG
-        else entry - sl_dist * config.VSB_TP_RR
-    )
+    tp1 = _structural_tp1(ctx, direction, entry, sl_dist, config.VSB_TP_RR)
     tp1_pct = abs(tp1 - entry) / entry * 100.0
     reason = (
         "15m swing-high volume breakout"
