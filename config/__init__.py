@@ -288,6 +288,13 @@ MIN_SCALP_COST_MULT: float = _safe_float("INDIA_MIN_SCALP_COST_MULT", 1.5)
 # the TP1 distance. The feasibility gate applies to TP1 only — TP2 is a
 # stretch target with the runner protected at BE.
 TP2_ENABLED: bool = _safe_bool("INDIA_TP2_ENABLED", True)
+# G2 — structure-anchored TP1 for the fixed-R-multiple breakout setups (ORB,
+# VSB/BDS). When on, TP1 snaps to the nearest real level (PDH/PDL/PDC, locked
+# OR, session VWAP, round-number grid) inside the [MIN_RR, setup R-multiple]
+# band beyond entry, else keeps the exact R-multiple. Never moves TP1 past the
+# old distance or below the min-RR floor. False = exact prior fixed-2R geometry.
+STRUCTURAL_TP1_ENABLED: bool = _safe_bool("INDIA_STRUCTURAL_TP1_ENABLED", True)
+STRUCTURAL_TP1_MIN_RR: float = _safe_float("INDIA_STRUCTURAL_TP1_MIN_RR", 1.2)
 # Fallback TP2 distance as a multiple of the TP1 distance (2.0 = twice as far).
 TP2_DIST_MULT: float = _safe_float("INDIA_TP2_DIST_MULT", 2.0)
 # A mapped structural level only becomes TP2 inside this band of TP1 distances
@@ -776,4 +783,22 @@ NSE_HOLIDAYS_FILE: str = _safe_str(
 # The event-risk gate suppresses all signals on these dates.
 MACRO_EVENTS_FILE: str = _safe_str(
     "MACRO_EVENTS_FILE", str(_CONFIG_DIR / "macro_events.json")
+)
+# Per-stock earnings blackout (G8): a single-stock F&O signal fired into its own
+# results window is a coin-flip on the print. Index bases have no single
+# earnings date and are never blacked out. File is env-pointable at a live NSE
+# results calendar; unavailable/empty -> inert (no blackout, never fabricated).
+EARNINGS_EVENTS_FILE: str = _safe_str(
+    "INDIA_EARNINGS_EVENTS_FILE", str(_CONFIG_DIR / "earnings_events.json")
+)
+EARNINGS_BLACKOUT_ENABLED: bool = _safe_bool(
+    "INDIA_EARNINGS_BLACKOUT_ENABLED", True
+)
+# Blackout window around the results date, inclusive: pre-print drift and the
+# post-print gap are both un-tradeable on a 5m scalp.
+EARNINGS_BLACKOUT_DAYS_BEFORE: int = _safe_int(
+    "INDIA_EARNINGS_BLACKOUT_DAYS_BEFORE", 1
+)
+EARNINGS_BLACKOUT_DAYS_AFTER: int = _safe_int(
+    "INDIA_EARNINGS_BLACKOUT_DAYS_AFTER", 1
 )

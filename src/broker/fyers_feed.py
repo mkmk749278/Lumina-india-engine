@@ -903,3 +903,6 @@ class FyersDataFeed:
         self._mkt.compute_and_set_max_pain(
             base, strikes, call_oi_list, put_oi_list
         )
+        self._mkt.compute_and_set_oi_walls(
+            base, strikes, call_oi_list, put_oi_list
+        )

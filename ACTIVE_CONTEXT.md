@@ -1,6 +1,46 @@
 # ACTIVE_CONTEXT.md — Lumin India
 
-**Last updated:** 2026-07-17 (Session 22 — docs only: CLAUDE.md reconciled to as-built state across engine, app and ops. Branch `claude/claude-md-documentation-61vs7s`, all three repos.)
+**Last updated:** 2026-07-21 (Session 23 — strategy-gap verification + net-new
+gaps. Branch `claude/new-session-jo0eon`, engine.)
+
+---
+
+## Session 23 (2026-07-21) — Strategy-gap handoff verification + net-new gaps
+
+**Trigger:** owner uploaded the ops-session `ENGINE_STRATEGY_GAP_HANDOFF2`
+(inferred from signal output, *no engine code in that session*) plus the live
+07-15→07-21 ledger CSV + Edge/Allocator PDFs, and authorised implementing every
+gap "like production."
+
+**Verification (each G-item checked against code + the live ledger):** most of
+the handoff's §5 rebuild spec was **already built** (Sessions 9/19/20/21). G1
+(ATR stops), G5 (4-quadrant OI), G6 (direction gate), G7 (phase), G8
+(macro/expiry) refuted or already-present; G3/G7 corrective levers are
+**built-but-dark**; G4 fixed in shadow. The real bleed = a LONG book in a
+choppy week the **allocator already flags SUPPRESS** but is unarmed. Full table
++ arming runbook in `docs/STRATEGY_GAP_REBUILD.md`.
+
+**Shipped (engine, this branch — all reversible, env-flagged, tested):**
+- **G8 earnings blackout gate** — `src/session/earnings_calendar.py` +
+  `_earnings_blackout_gate`; `config/earnings_events.json` (env-pointable,
+  inert until populated — never fabricated). Index bases exempt.
+- **G2 structural TP1** — `_structural_tp1` replaces pure fixed-2R for ORB/VSB;
+  snaps to nearest real level in the `[MIN_RR, R]` band, else exact 2R fallback.
+  `INDIA_STRUCTURAL_TP1_ENABLED` (default on).
+- **G5 OI walls as S/R** — call/put OI walls derived in the chain poll
+  (`IndiaMarketData.compute_and_set_oi_walls`), stamped on context
+  (`call_oi_wall`/`put_oi_wall`), fed to confluence scoring + structural
+  targets (`_oi_levels`). Index bases, Fyers chain feed, graceful-absent.
+- **v2 calibration tool** — `tools/v2_calibration.py`: the monotonicity check
+  to run before flipping `INDIA_SCORING_V2_ACTIVE`.
+
+**NOT changed (owner-gated, need the VPS replay I can't run here):**
+`INDIA_ALLOCATOR_ARMED` and `INDIA_SCORING_V2_ACTIVE` stay dark. CTE
+recommendation: **arm the allocator first** (highest leverage, already built,
+covers the `NEUTRAL/LONG` cohort the direction gate misses); hold v2 until the
+calibration tool reports READY. Exact VPS commands in the runbook.
+
+**Tests:** 580 green (was 553), ruff + mypy clean.
 
 ---
 

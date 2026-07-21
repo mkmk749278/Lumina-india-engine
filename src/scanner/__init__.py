@@ -89,6 +89,7 @@ from src.market_context import (
     classify_session_phase,
 )
 from src.regime import Regime
+from src.session.earnings_calendar import EarningsCalendar
 from src.session.event_calendar import EventCalendar
 from src.session.expiry_manager import ExpiryManager
 from src.session.session_manager import SessionManager, SessionState
@@ -264,8 +265,13 @@ class Suppression:
 class GateChain:
     """Stateful gate chain — tracks cooldowns and daily emissions."""
 
-    def __init__(self, events: EventCalendar | None = None) -> None:
+    def __init__(
+        self,
+        events: EventCalendar | None = None,
+        earnings: EarningsCalendar | None = None,
+    ) -> None:
         self._events = events or EventCalendar()
+        self._earnings = earnings or EarningsCalendar()
         self._last_fire: dict[str, datetime] = {}
         self._emitted_today: Counter[tuple[str, str]] = Counter()
         self._emitted_total_today = 0
@@ -364,6 +370,7 @@ class GateChain:
             self._stale_data_gate,
             self._cooldown_gate,
             self._event_risk_gate,
+            self._earnings_blackout_gate,
             self._circuit_check_gate,
             self._min_atr_gate,
             self._sl_noise_gate,
@@ -686,6 +693,31 @@ class GateChain:
         event = self._events.event_on(now.date())
         if event is not None:
             return f"macro event day: {event} (IB13 — no signals)"
+        return None
+
+    def _earnings_blackout_gate(
+        self,
+        signal: IndiaSignal,
+        ctx: IndiaContext,
+        session_state: SessionState,
+        now: datetime,
+    ) -> str | None:
+        """G8 — a single-stock signal inside its own results window is a
+        coin-flip on the print, not a structure read. Index bases have no
+        single earnings date and are exempt. Inert unless the earnings
+        calendar is populated (never fabricated)."""
+        if not config.EARNINGS_BLACKOUT_ENABLED:
+            return None
+        if ctx.base in config.INDEX_BASES:
+            return None
+        ed = self._earnings.earnings_on(ctx.base, now.date())
+        if ed is not None:
+            return (
+                f"{ctx.base} earnings blackout: results {ed.isoformat()}"
+                f" within ±{config.EARNINGS_BLACKOUT_DAYS_BEFORE}/"
+                f"{config.EARNINGS_BLACKOUT_DAYS_AFTER}d (G8 — single-stock"
+                " event risk)"
+            )
         return None
 
     @staticmethod
