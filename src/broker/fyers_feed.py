@@ -96,15 +96,17 @@ _FETCH_WINDOW_HOURS = 360
 _RING_SEED_HOURS = 6
 # Bases seeding in flight at once. Sequential seeding of 46 bases × 3 REST
 # calls was a 1-2 minute feed-down window on every boot/refresh/hot-swap/
-# watchdog restart; 5-way concurrency cuts it ~5x while staying polite to
-# Fyers' per-second rate limits.
-_SEED_CONCURRENCY = config._safe_int("FYERS_SEED_CONCURRENCY", 5)
+# watchdog restart; concurrency cuts it while staying polite to Fyers' rate
+# limits. Lowered 5→3 after 2026-07-22 live: 5-way still burst past the limit
+# and a few bases exhausted their 429 retries at a full reseed. 3-way + the
+# retry below (below) keeps the whole universe under the ceiling.
+_SEED_CONCURRENCY = config._safe_int("FYERS_SEED_CONCURRENCY", 3)
 # 429 backoff: Fyers rate-limits the burst of history calls at session open
 # (46 bases × 5m + 15m + daily fetches). Without retry a throttled base is left
 # unseeded for the whole day — it can't fire clean signals until live ticks
 # rebuild its buffers. Retry on 429 with exponential backoff + jitter, honoring
 # Retry-After, so the seed converges instead of dropping bases.
-_HISTORY_MAX_RETRIES = config._safe_int("FYERS_HISTORY_MAX_RETRIES", 4)
+_HISTORY_MAX_RETRIES = config._safe_int("FYERS_HISTORY_MAX_RETRIES", 6)
 _HISTORY_RETRY_BASE_SEC = config._safe_float("FYERS_HISTORY_RETRY_BASE_SEC", 0.5)
 _HISTORY_RETRY_MAX_SEC = config._safe_float("FYERS_HISTORY_RETRY_MAX_SEC", 8.0)
 
