@@ -22,6 +22,7 @@ Hard limits enforced here:
 from __future__ import annotations
 
 import asyncio
+import random
 import threading
 import time as time_mod
 from collections.abc import Callable
@@ -98,6 +99,14 @@ _RING_SEED_HOURS = 6
 # watchdog restart; 5-way concurrency cuts it ~5x while staying polite to
 # Fyers' per-second rate limits.
 _SEED_CONCURRENCY = config._safe_int("FYERS_SEED_CONCURRENCY", 5)
+# 429 backoff: Fyers rate-limits the burst of history calls at session open
+# (46 bases × 5m + 15m + daily fetches). Without retry a throttled base is left
+# unseeded for the whole day — it can't fire clean signals until live ticks
+# rebuild its buffers. Retry on 429 with exponential backoff + jitter, honoring
+# Retry-After, so the seed converges instead of dropping bases.
+_HISTORY_MAX_RETRIES = config._safe_int("FYERS_HISTORY_MAX_RETRIES", 4)
+_HISTORY_RETRY_BASE_SEC = config._safe_float("FYERS_HISTORY_RETRY_BASE_SEC", 0.5)
+_HISTORY_RETRY_MAX_SEC = config._safe_float("FYERS_HISTORY_RETRY_MAX_SEC", 8.0)
 
 _REDACTED = "***REDACTED***"
 
@@ -358,6 +367,51 @@ class FyersDataFeed:
         # Live volume deltas re-baseline against the fresh seed.
         self._cum_vol.reset()
 
+    @staticmethod
+    def _retry_after_seconds(resp: httpx.Response) -> float | None:
+        """Parse a Retry-After header (delta-seconds form) if present."""
+        try:
+            return max(0.0, float(resp.headers.get("retry-after", "")))
+        except (TypeError, ValueError):
+            return None
+
+    async def _history_get(
+        self, params: dict[str, str], *, what: str
+    ) -> httpx.Response | None:
+        """GET the history endpoint with 429-aware retry.
+
+        Fyers throttles the burst of history calls at session open. Retry on
+        429 with exponential backoff + jitter (honoring Retry-After), capped at
+        ``_HISTORY_MAX_RETRIES``. Returns the response on any non-429 status
+        (the caller still handles other errors); returns ``None`` once 429s are
+        exhausted — a best-effort miss the caller treats as "unseeded", already
+        logged, no traceback."""
+        assert self._http is not None
+        delay = _HISTORY_RETRY_BASE_SEC
+        for attempt in range(1, _HISTORY_MAX_RETRIES + 1):
+            resp = await self._http.get(_HISTORY_URL, params=params)
+            if resp.status_code != 429:
+                return resp
+            if attempt == _HISTORY_MAX_RETRIES:
+                logger.warning(
+                    "history 429 for {} — exhausted {} retries, left unseeded",
+                    what,
+                    _HISTORY_MAX_RETRIES,
+                )
+                return None
+            wait = self._retry_after_seconds(resp) or delay
+            wait = min(wait, _HISTORY_RETRY_MAX_SEC) + random.uniform(0.0, 0.4)
+            logger.info(
+                "history 429 for {} — retry {}/{} in {:.1f}s",
+                what,
+                attempt,
+                _HISTORY_MAX_RETRIES,
+                wait,
+            )
+            await asyncio.sleep(wait)
+            delay = min(delay * 2, _HISTORY_RETRY_MAX_SEC)
+        return None
+
     async def _seed_one(
         self,
         base: str,
@@ -373,9 +427,8 @@ class FyersDataFeed:
         disturbs its siblings."""
         assert self._http is not None
         try:
-            resp = await self._http.get(
-                _HISTORY_URL,
-                params={
+            resp = await self._history_get(
+                {
                     "symbol": symbol,
                     "resolution": _HISTORY_RESOLUTION,
                     "date_format": "0",
@@ -383,7 +436,10 @@ class FyersDataFeed:
                     "range_to": str(range_to),
                     "cont_flag": "1",
                 },
+                what=base,
             )
+            if resp is None:
+                return
             resp.raise_for_status()
             data = resp.json()
 
@@ -463,9 +519,8 @@ class FyersDataFeed:
         if self._http is None:
             return []
         try:
-            resp = await self._http.get(
-                _HISTORY_URL,
-                params={
+            resp = await self._history_get(
+                {
                     "symbol": symbol,
                     "resolution": _HTF_RESOLUTION,
                     "date_format": "0",
@@ -475,7 +530,10 @@ class FyersDataFeed:
                     "range_to": str(int(now.timestamp())),
                     "cont_flag": "1",
                 },
+                what=f"{base} 15m",
             )
+            if resp is None:
+                return []
             resp.raise_for_status()
             data = resp.json()
             if data.get("s") != "ok":
@@ -509,9 +567,8 @@ class FyersDataFeed:
         if self._on_daily_regime is None or self._http is None:
             return
         try:
-            resp = await self._http.get(
-                _HISTORY_URL,
-                params={
+            resp = await self._history_get(
+                {
                     "symbol": symbol,
                     "resolution": _DAILY_RESOLUTION,
                     "date_format": "0",
@@ -521,7 +578,10 @@ class FyersDataFeed:
                     "range_to": str(int(now.timestamp())),
                     "cont_flag": "1",
                 },
+                what=f"{base} daily",
             )
+            if resp is None:
+                return
             resp.raise_for_status()
             data = resp.json()
             if data.get("s") != "ok":

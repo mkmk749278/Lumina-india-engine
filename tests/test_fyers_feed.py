@@ -495,3 +495,50 @@ async def test_start_and_stop() -> None:
 
         await feed.stop()
         assert feed._running is False
+
+
+# ── History fetch 429 backoff ───────────────────────────────────────────
+
+
+def _resp(status: int, headers: dict | None = None) -> httpx.Response:
+    return httpx.Response(
+        status, headers=headers or {}, request=httpx.Request("GET", "http://x")
+    )
+
+
+def test_retry_after_seconds_parses() -> None:
+    assert FyersDataFeed._retry_after_seconds(_resp(429, {"retry-after": "5"})) == 5.0
+    assert FyersDataFeed._retry_after_seconds(_resp(429)) is None
+
+
+async def test_history_get_returns_non_429_immediately() -> None:
+    feed = _make_feed()
+    feed._http = MagicMock()
+    feed._http.get = AsyncMock(return_value=_resp(200))
+    resp = await feed._history_get({"symbol": "X"}, what="X")
+    assert resp is not None and resp.status_code == 200
+    assert feed._http.get.await_count == 1
+
+
+async def test_history_get_retries_then_succeeds() -> None:
+    feed = _make_feed()
+    feed._http = MagicMock()
+    feed._http.get = AsyncMock(
+        side_effect=[_resp(429, {"retry-after": "0"}), _resp(200)]
+    )
+    with patch("src.broker.fyers_feed.asyncio.sleep", new=AsyncMock()) as slept:
+        resp = await feed._history_get({"symbol": "X"}, what="X")
+    assert resp is not None and resp.status_code == 200
+    assert feed._http.get.await_count == 2
+    slept.assert_awaited()
+
+
+async def test_history_get_gives_up_after_max_retries(monkeypatch) -> None:
+    monkeypatch.setattr("src.broker.fyers_feed._HISTORY_MAX_RETRIES", 3)
+    feed = _make_feed()
+    feed._http = MagicMock()
+    feed._http.get = AsyncMock(return_value=_resp(429))
+    with patch("src.broker.fyers_feed.asyncio.sleep", new=AsyncMock()):
+        resp = await feed._history_get({"symbol": "X"}, what="X")
+    assert resp is None
+    assert feed._http.get.await_count == 3
